@@ -24,7 +24,8 @@ def save_uploaded_file(uploaded_file, dest_path: Path):
             logger.error(error_msg)
             raise ValueError(error_msg)
         
-        logger.info(f"Saving uploaded file to {dest_path} (size: {file_size / (1024*1024):.2f} MB)")
+        size_mb = f"{file_size / (1024*1024):.2f}" if file_size else "unknown"
+        logger.info(f"Saving uploaded file to {dest_path} (size: {size_mb} MB)")
         with open(dest_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         logger.info(f"File saved successfully: {dest_path}")
@@ -119,5 +120,38 @@ def handle_uploaded_zip(uploaded_file, uploads_dir: Path):
         
     except Exception as e:
         logger.error(f"Error handling uploaded ZIP: {e}", exc_info=True)
+        raise
+
+
+def handle_github_url(github_url: str, uploads_dir: Path, branch: str | None = None):
+    """
+    Handle GitHub repository URL: clone and prepare for analysis.
+    
+    Args:
+        github_url: GitHub repository URL
+        uploads_dir: Directory where repo will be cloned
+        branch: Specific branch to clone (optional)
+    
+    Returns:
+        tuple: (repo_name, extract_path)
+    """
+    try:
+        from utils.github_utils import clone_github_repo
+        
+        logger.info(f"Processing GitHub URL: {github_url}")
+        
+        # Clone repository
+        repo_name, repo_path = clone_github_repo(
+            url=github_url,
+            target_dir=uploads_dir,
+            branch=branch,
+            depth=1  # Shallow clone for faster performance
+        )
+        
+        logger.info(f"Successfully cloned GitHub repository: {repo_name} -> {repo_path}")
+        return repo_name, repo_path
+        
+    except Exception as e:
+        logger.error(f"Error handling GitHub URL: {e}", exc_info=True)
         raise
 

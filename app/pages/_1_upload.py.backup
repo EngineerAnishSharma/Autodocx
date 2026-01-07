@@ -5,8 +5,7 @@ Modern UI for uploading repos, previewing structure,
 running AST-based preprocessing, and viewing code.
 
 Features:
-- Upload ZIP files or GitHub URLs
-- GitHub integration for direct cloning
+- Upload ZIP files from GitHub/Bitbucket
 - Real-time progress indicators
 - Code exploration
 - AST-based analysis
@@ -45,7 +44,7 @@ def show():
     if "uploaded_repo_path" in st.session_state:
         extract_path = Path(st.session_state["uploaded_repo_path"])
         if extract_path.exists():
-            repo_name = st.session_state.get("uploaded_repo_name", extract_path.name)
+            repo_name = extract_path.name
     
     # Tab 1: ZIP Upload
     with tab1:
@@ -60,11 +59,11 @@ def show():
 
         if uploaded_file:
             try:
-                temp_repo_name, temp_extract_path = handle_uploaded_zip(uploaded_file, uploads_dir)
-                temp_extract_path = Path(temp_extract_path)
-                st.session_state["uploaded_repo_path"] = str(temp_extract_path)
-                st.session_state["uploaded_repo_name"] = temp_repo_name
-                st.success(f"Repository uploaded and extracted successfully: `{temp_repo_name}`")
+                repo_name, extract_path = handle_uploaded_zip(uploaded_file, uploads_dir)
+                extract_path = Path(extract_path)
+                st.session_state["uploaded_repo_path"] = str(extract_path)
+                st.session_state["uploaded_repo_name"] = repo_name
+                st.success(f"Repository uploaded and extracted successfully: `{repo_name}`")
                 st.rerun()
             except Exception as e:
                 st.error(f"Error processing upload: {e}")
@@ -106,8 +105,8 @@ def show():
         
         # Example URLs
         with st.expander("Example URLs", expanded=False):
-            st.code("https://github.com/octocat/Hello-World")
-            st.code("https://github.com/pallets/flask")
+            st.code("https://github.com/openai/whisper")
+            st.code("https://github.com/microsoft/vscode")
             st.code("https://github.com/facebook/react")
         
         # Clone repository when button is clicked
@@ -120,27 +119,22 @@ def show():
                 with st.spinner("Cloning repository... This may take a moment."):
                     try:
                         branch = branch_name.strip() if branch_name and branch_name.strip() else None
-                        temp_repo_name, temp_extract_path = handle_github_url(
+                        repo_name, extract_path = handle_github_url(
                             github_url,
                             uploads_dir,
-                            branch=branch
-                        )
-                        temp_extract_path = Path(temp_extract_path)
                         # Store in session state for persistence across reruns
-                        st.session_state["uploaded_repo_path"] = str(temp_extract_path)
-                        st.session_state["uploaded_repo_name"] = temp_repo_name
-                        st.success(f"✅ Repository cloned successfully: `{temp_repo_name}`")
+                        st.session_state["uploaded_repo_path"] = str(extract_path)
+                        st.session_state["uploaded_repo_name"] = repo_name
+                        st.success(f"✅ Repository cloned successfully: `{repo_name}`")
                         st.balloons()
                         # Force rerun to show the analysis sections
-                        st.rerun()
+                        st.rerun
+                        extract_path = Path(extract_path)
+                        st.success(f"✅ Repository cloned successfully: `{repo_name}`")
+                        st.balloons()
                     except Exception as e:
                         st.error(f"❌ Error cloning repository: {e}")
-                        if "git" in str(e).lower():
-                            st.info("Make sure Git is properly installed and accessible from the command line.")
-
-    # If we have a repository (either from ZIP or GitHub), show the analysis options
-    if extract_path and extract_path.exists():
-        # Show success message with repo name
+               success message with repo name
         if repo_name:
             st.info(f"📦 Currently loaded: **{repo_name}**")
         
@@ -160,8 +154,13 @@ def show():
         
         # Show repository structure
         with st.expander("Repository structure", expanded=False):
-            tree = list_repo_tree(extract_path, max_entries=300)
+            tree = list_repo_tree((extract_path), max_entries=300)
+            st.code("\n".join(tree), language="bash"
+            tree = list_repo_tree((extract_path), max_entries=300)
             st.code("\n".join(tree), language="bash")
+
+        # Store repo path
+        st.session_state["uploaded_repo_path"] = str(extract_path)
 
         # --- File viewer dropdown ---
         st.markdown("### 2) Explore code files")

@@ -18,7 +18,8 @@ In MNC (Multinational Corporation) environments:
 ## ✨ Features
 
 ### 📦 Repository Analysis
-- **Upload Support**: Accept ZIP files from GitHub, Bitbucket, or any Git repository
+- **Upload Support**: Accept ZIP files OR direct GitHub URLs (no download needed!)
+- **GitHub Integration**: Clone repositories directly from GitHub URLs
 - **Multi-Language Support**: Python, JavaScript, TypeScript, Java, Go, Rust, C/C++, C#
 - **Automatic Structure Detection**: Identifies project organization and key files
 - **Dependency Analysis**: Extracts dependencies from package.json, requirements.txt, pom.xml
@@ -48,6 +49,7 @@ In MNC (Multinational Corporation) environments:
 ### Prerequisites
 - Python 3.8 or higher
 - pip (Python package manager)
+- **Git** (required for GitHub integration) - Download from https://git-scm.com/
 
 ### Installation
 
@@ -90,9 +92,17 @@ In MNC (Multinational Corporation) environments:
 ## 📖 Usage Guide
 
 ### Step 1: Upload Repository
+
+**Method A: GitHub URL (Recommended)**
+1. Navigate to the "🔗 GitHub URL" tab
+2. Paste the GitHub repository URL (e.g., `https://github.com/username/repo`)
+3. (Optional) Specify a branch in Advanced Options
+4. Click "Clone" and wait for the repository to be cloned
+
+**Method B: ZIP Upload**
 1. Download your repository as a ZIP file from GitHub/Bitbucket
-2. Click "Upload repository (.zip)" in the AutoDocx interface
-3. Select your ZIP file (max 100 MB)
+2. Navigate to the "📁 Upload ZIP" tab
+3. Click "Upload repository (.zip)" and select your ZIP file (max 100 MB)
 4. Wait for extraction and validation
 
 ### Step 2: Explore Code Files
