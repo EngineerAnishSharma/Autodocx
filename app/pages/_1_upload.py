@@ -15,10 +15,12 @@ Features:
 import streamlit as st
 from pathlib import Path
 import time
+
 from components.uploader import handle_uploaded_zip
 from utils.file_utils import list_repo_tree
 from utils.ast_parser import parse_repo_ast, parse_repo_ast_structured
 from utils.report_builder import build_prompt, generate_llm_report, generate_markdown_report
+from utils.pdf_utils import markdown_to_pdf_bytes
 
 PAGE_TITLE = "📦 Upload Repository"
 
@@ -208,14 +210,35 @@ def show():
                             
                             st.success("✅ Report generated successfully!")
                             st.markdown(report_md)
-                            
-                            st.download_button(
-                                label="📥 Download Report (Markdown)",
-                                data=report_md,
-                                file_name=f"{extract_path.name}_documentation.md",
-                                mime="text/markdown",
-                                use_container_width=True
-                            )
+
+                            # Prepare PDF bytes from markdown
+                            try:
+                                pdf_bytes = markdown_to_pdf_bytes(
+                                    report_md,
+                                    title=f"{extract_path.name} - AutoDocx Documentation"
+                                )
+                            except Exception as pdf_err:
+                                pdf_bytes = None
+                                st.warning(f"Could not generate PDF version: {pdf_err}")
+
+                            col_md, col_pdf = st.columns(2)
+                            with col_md:
+                                st.download_button(
+                                    label="📥 Download Report (Markdown)",
+                                    data=report_md,
+                                    file_name=f"{extract_path.name}_documentation.md",
+                                    mime="text/markdown",
+                                    use_container_width=True
+                                )
+                            with col_pdf:
+                                st.download_button(
+                                    label="📄 Download Report (PDF)",
+                                    data=pdf_bytes if pdf_bytes is not None else b"",
+                                    file_name=f"{extract_path.name}_documentation.pdf",
+                                    mime="application/pdf",
+                                    use_container_width=True,
+                                    disabled=pdf_bytes is None
+                                )
                         except Exception as e:
                             st.error(f"Report generation failed: {e}")
                             import traceback
@@ -254,7 +277,17 @@ def show():
                             st.success("✅ AI-powered report generated successfully!")
                             st.markdown(report_md)
                             
-                            col1, col2 = st.columns(2)
+                            # Prepare PDF bytes from markdown
+                            try:
+                                pdf_bytes = markdown_to_pdf_bytes(
+                                    report_md,
+                                    title=f"{extract_path.name} - AutoDocx AI Documentation"
+                                )
+                            except Exception as pdf_err:
+                                pdf_bytes = None
+                                st.warning(f"Could not generate PDF version: {pdf_err}")
+
+                            col1, col2, col3 = st.columns(3)
                             with col1:
                                 st.download_button(
                                     label="📥 Download Report (Markdown)",
@@ -264,6 +297,15 @@ def show():
                                     use_container_width=True
                                 )
                             with col2:
+                                st.download_button(
+                                    label="📄 Download Report (PDF)",
+                                    data=pdf_bytes if pdf_bytes is not None else b"",
+                                    file_name=f"{extract_path.name}_ai_documentation.pdf",
+                                    mime="application/pdf",
+                                    use_container_width=True,
+                                    disabled=pdf_bytes is None
+                                )
+                            with col3:
                                 # Option to view prompt (for debugging)
                                 with st.expander("🔍 View Prompt"):
                                     st.code(prompt[:2000] + "..." if len(prompt) > 2000 else prompt)
