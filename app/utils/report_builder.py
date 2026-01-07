@@ -125,50 +125,107 @@ def build_prompt(parsed: Dict) -> str:
     pom_xml = load_pom_xml(repo_path)
     
     prompt_parts = []
-    prompt_parts.append("You are an expert software documentation writer. Your task is to create comprehensive, "
-                       "professional documentation for a software project that will help new developers understand "
-                       "and contribute to the project quickly.")
+    prompt_parts.append(
+        "You are an expert software documentation writer. Your task is to create **comprehensive, detailed, and practical** "
+        "documentation for this project. The documentation should be **3-4 pages long** (approximately 2000-3000 words) "
+        "and contain ALL essential information a new developer needs to understand, set up, and work with this project."
+    )
     
     prompt_parts.append("\n## Instructions:")
-    prompt_parts.append("Generate a detailed project documentation report in Markdown format with the following sections:")
-    prompt_parts.append("1. **Project Overview** - Brief description of what the project does")
-    prompt_parts.append("2. **Key Features** - Main functionalities and capabilities")
-    prompt_parts.append("3. **Project Structure** - High-level architecture and organization")
-    prompt_parts.append("4. **Technology Stack** - Languages, frameworks, and tools used")
-    prompt_parts.append("5. **Dependencies** - Key libraries and packages")
-    prompt_parts.append("6. **Important Files** - Critical files and their purposes")
-    prompt_parts.append("7. **Setup & Installation** - How to set up and run the project")
-    prompt_parts.append("8. **Usage Guide** - How to use the project")
-    prompt_parts.append("9. **Development Guidelines** - For contributors")
-    prompt_parts.append("10. **Known Issues & Future Improvements** - Current limitations and planned features")
+    prompt_parts.append(
+        "Generate a **comprehensive and detailed** project documentation report in **Markdown** format. "
+        "The documentation must be **3-4 pages long** with extensive details. Include the following sections "
+        "with thorough explanations (avoid marketing language, be technical and specific):"
+    )
+    prompt_parts.append("1. **Project Overview** – What the project does, who it is for, and the main problem it solves.")
+    prompt_parts.append(
+        "2. **Key Features & Use Cases** – Bullet list of main features and typical real-world usage scenarios."
+    )
+    prompt_parts.append(
+        "3. **Architecture & Project Structure** – High-level diagram in text plus explanation of how the "
+        "frontend, backend, services, and data stores interact. Summarize important folders and how code is organized."
+    )
+    prompt_parts.append(
+        "4. **Technology Stack** – Languages with **specific version numbers** (e.g., Python 3.9, Node.js 18.x), "
+        "frameworks with versions, major libraries with versions, and any external services (APIs, databases, queues). "
+        "Include version requirements for all critical technologies."
+    )
+    prompt_parts.append(
+        "5. **Dependencies** – **Complete list** of important Python/Node/Java/etc dependencies from package.json, "
+        "requirements.txt, or pom.xml with **exact version numbers** and brief explanations of what each dependency "
+        "is used for. Group by category (e.g., web framework, database, testing, utilities)."
+    )
+    prompt_parts.append(
+        "6. **Important Modules & Files** – For the most important files detected, explain their roles, key classes/"
+        "functions inside them, and how they fit into the overall flow."
+    )
+    prompt_parts.append(
+        "7. **Configuration & Environment** – Describe expected environment variables, config files, and any secrets "
+        "or API keys needed (without revealing real values)."
+    )
+    prompt_parts.append(
+        "8. **Setup & Installation** – Step‑by‑step instructions to run the project locally from a fresh clone. "
+        "Include commands to install dependencies, migrations (if any), and how to start each service."
+    )
+    prompt_parts.append(
+        "9. **Usage Guide** – How to interact with the running app (CLI commands, API endpoints, web UI flows). "
+        "Mention at least the main entrypoints a developer should try."
+    )
+    prompt_parts.append(
+        "10. **Development Guidelines** – Coding conventions, project layout rules, how to add a new feature, run tests, "
+        "and where to put new code."
+    )
+    prompt_parts.append(
+        "11. **Limitations, Risks & Next Steps** – Known issues, technical debt, and sensible next improvements."
+    )
     
-    prompt_parts.append("\nKeep the documentation clear, concise, and actionable. Use proper Markdown formatting.")
+    prompt_parts.append(
+        "\n**Documentation Requirements:**\n"
+        "- The documentation must be **comprehensive and detailed** (3-4 pages, approximately 2000-3000 words).\n"
+        "- Include **specific version numbers** for all technologies, frameworks, and major dependencies.\n"
+        "- Provide **detailed explanations** for each section - don't be brief.\n"
+        "- Use clear structure with proper Markdown headings, bullet lists, and code blocks where appropriate.\n"
+        "- Include **concrete examples** and **step-by-step instructions** where relevant.\n"
+        "- If something is unknown from the code, say \"Not clearly inferable from repository\" instead of guessing.\n"
+        "- Be thorough: explain architecture patterns, data flow, key algorithms, API endpoints, database schemas, etc."
+    )
     
     prompt_parts.append("\n---\n## Repository Statistics:")
     prompt_parts.append(summarize_stats(stats))
     
     prompt_parts.append("\n---\n## Code Structure Analysis:")
-    prompt_parts.append(summarize_files(files, limit=30))
+    prompt_parts.append(summarize_files(files, limit=50))  # Increased from 30 to 50 for more context
     
     if readme:
-        prompt_parts.append("\n---\n## Existing README Content:")
-        prompt_parts.append("\n".join(readme.splitlines()[:100]))
+        prompt_parts.append("\n---\n## Existing README Content (Full):")
+        prompt_parts.append("\n".join(readme.splitlines()[:200]))  # Increased from 100 to 200 lines
     
     if package_json:
-        prompt_parts.append("\n---\n## Package.json Information:")
+        prompt_parts.append("\n---\n## Package.json Information (Full Details):")
         prompt_parts.append(f"Name: {package_json.get('name', 'N/A')}")
         prompt_parts.append(f"Version: {package_json.get('version', 'N/A')}")
         prompt_parts.append(f"Description: {package_json.get('description', 'N/A')}")
         if package_json.get('dependencies'):
-            prompt_parts.append(f"Dependencies: {', '.join(list(package_json.get('dependencies', {}).keys())[:20])}")
+            deps = package_json.get('dependencies', {})
+            prompt_parts.append(f"\nDependencies with versions ({len(deps)} total):")
+            for dep_name, dep_version in list(deps.items())[:50]:  # Show up to 50 with versions
+                prompt_parts.append(f"  - {dep_name}: {dep_version}")
+        if package_json.get('devDependencies'):
+            dev_deps = package_json.get('devDependencies', {})
+            prompt_parts.append(f"\nDev Dependencies with versions ({len(dev_deps)} total):")
+            for dep_name, dep_version in list(dev_deps.items())[:30]:
+                prompt_parts.append(f"  - {dep_name}: {dep_version}")
+        if package_json.get('engines'):
+            prompt_parts.append(f"\nRequired Engine Versions: {package_json.get('engines')}")
     
     if requirements:
-        prompt_parts.append("\n---\n## Python Dependencies:")
-        prompt_parts.append("\n".join(requirements[:30]))
+        prompt_parts.append("\n---\n## Python Dependencies (Full List with Versions):")
+        prompt_parts.append(f"Total dependencies: {len(requirements)}")
+        prompt_parts.append("\n".join(requirements[:50]))  # Show more dependencies
     
     if pom_xml:
-        prompt_parts.append("\n---\n## Maven Configuration (pom.xml excerpt):")
-        prompt_parts.append(pom_xml[:500])
+        prompt_parts.append("\n---\n## Maven Configuration (pom.xml - Full Content):")
+        prompt_parts.append(pom_xml[:3000])  # Increased from 500 to 3000 chars for more context
     
     prompt_parts.append("\n---\n## Generate the documentation report now.")
     
@@ -194,8 +251,20 @@ def generate_llm_report(prompt: str, model: Optional[str] = None) -> str:
         resp = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "You are an expert technical documentation writer. Create comprehensive, "
-                 "well-structured documentation that helps developers understand and work with the project effectively."},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert technical documentation writer. "
+                        "Create comprehensive, detailed documentation (3-4 pages, 2000-3000 words) that includes:\n"
+                        "- ALL essential information: technology versions, complete dependency lists, architecture details.\n"
+                        "- Specific version numbers for all technologies, frameworks, and major dependencies.\n"
+                        "- Step-by-step setup instructions with exact commands.\n"
+                        "- Detailed explanations of code structure, key files, and their purposes.\n"
+                        "- Usage examples, API endpoints, configuration details.\n"
+                        "- Development guidelines and contribution instructions.\n"
+                        "Be thorough, specific, and technical. Include concrete examples and code snippets where relevant."
+                    ),
+                },
                 {"role": "user", "content": prompt},
             ],
             temperature=OPENAI_TEMPERATURE,

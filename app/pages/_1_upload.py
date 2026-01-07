@@ -19,19 +19,15 @@ import time
 from components.uploader import handle_uploaded_zip
 from utils.file_utils import list_repo_tree
 from utils.ast_parser import parse_repo_ast, parse_repo_ast_structured
-from utils.report_builder import build_prompt, generate_llm_report, generate_markdown_report
+from utils.report_builder import build_prompt, generate_llm_report
 from utils.pdf_utils import markdown_to_pdf_bytes
 
 PAGE_TITLE = "📦 Upload Repository"
 
 
 def show():
-    st.divider()
-    st.subheader(PAGE_TITLE)
-    st.caption(
-        "Upload a `.zip` file of your GitHub repo. We'll extract it, analyze its structure, "
-        "and prepare it for documentation generation. Max upload size: 100 MB."
-    )
+    st.markdown("### 1) Upload repository ZIP")
+    st.caption("Max size: 100 MB. We safely extract and prep it for analysis.")
 
     uploaded_file = st.file_uploader(
         "📁 Upload repository (.zip)",
@@ -47,9 +43,9 @@ def show():
         try:
             repo_name, extract_path = handle_uploaded_zip(uploaded_file, uploads_dir)
             extract_path = Path(extract_path)
-            st.success(f"✅ Repository uploaded and extracted successfully: `{repo_name}`")
+            st.success(f"Repository uploaded and extracted successfully: `{repo_name}`")
 
-            with st.expander("📂 Repository Structure Preview", expanded=False):
+            with st.expander("Repository structure", expanded=False):
                 tree = list_repo_tree((extract_path), max_entries=300)
                 st.code("\n".join(tree), language="bash")
 
@@ -57,8 +53,8 @@ def show():
             st.session_state["uploaded_repo_path"] = str(extract_path)
 
             # --- File viewer dropdown ---
-            st.divider()
-            st.subheader("👁️ Step 2: Explore Code Files")
+            st.markdown("### 2) Explore code files")
+            st.caption("Quickly preview any supported source file.")
 
             # Find all supported code files
             code_extensions = [".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".rs", ".cpp", ".c", ".cs"]
@@ -113,8 +109,8 @@ def show():
                 st.warning("No supported code files found in the uploaded repository.")
 
             # --- Preprocessing section ---
-            st.divider()
-            st.subheader("⚙️ Step 3: Run Code Analysis")
+            st.markdown("### 3) Run code analysis")
+            st.caption("We scan a subset of files to extract structure, languages, and dependencies.")
 
             col1, col2 = st.columns(2)
             with col1:
@@ -127,29 +123,29 @@ def show():
                     help="Limit the number of files to analyze (for performance)"
                 )
             
-            if st.button("🚀 Start AST Parsing", type="primary", use_container_width=True):
+            if st.button("Start AST Parsing", type="primary", use_container_width=True):
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
-                status_text.info("🔄 Preprocessing started — running AST parsing and language detection...")
+                status_text.info("Preprocessing started — running AST parsing and language detection...")
                 progress_bar.progress(10)
 
                 try:
-                    status_text.info("📊 Scanning repository structure...")
+                    status_text.info("Scanning repository structure...")
                     progress_bar.progress(30)
                     
                     results = parse_repo_ast(str(extract_path), max_files=max_files_input)
                     progress_bar.progress(60)
 
                     if not results:
-                        st.warning("⚠️ No supported code files found in this repository.")
+                        st.warning("No supported code files found in this repository.")
                         progress_bar.progress(100)
                     else:
-                        status_text.info("✅ Parsing complete! Generating summary...")
+                        status_text.info("Parsing complete! Generating summary...")
                         progress_bar.progress(80)
                         
                         total_files = len(results)
-                        st.success(f"✅ Analysis complete! {total_files} files analyzed.")
+                        st.success(f"Analysis complete! {total_files} files analyzed.")
                         progress_bar.progress(100)
                         
                         # Store results in session state
@@ -157,7 +153,7 @@ def show():
                         st.session_state["parsed_structured"] = None  # Will be generated if needed
 
                         # Display statistics
-                        with st.expander("📊 Analysis Summary", expanded=True):
+                        with st.expander("Analysis Summary", expanded=True):
                             st.metric("Files Analyzed", total_files)
                             
                             # Count languages
@@ -172,162 +168,103 @@ def show():
                                 for lang, count in sorted(languages.items(), key=lambda x: x[1], reverse=True):
                                     st.write(f"- {lang}: {count} files")
 
-                        with st.expander("🧩 View Parsed Files (Top 15)", expanded=False):
+                        with st.expander("View Parsed Files (Top 15)", expanded=False):
                             for item in results[:15]:
                                 st.markdown(f"```\n{item}\n```")
                             if len(results) > 15:
                                 st.caption(f"... and {len(results) - 15} more files")
 
-                        status_text.success("✅ Parsed file summary generated successfully — ready for documentation generation!")
+                        status_text.success("Parsed file summary generated successfully — ready for documentation generation!")
                         progress_bar.empty()
                 except Exception as e:
-                    st.error(f"❌ Error during parsing: {e}")
+                    st.error(f"Error during parsing: {e}")
                     import traceback
                     with st.expander("Error Details"):
                         st.code(traceback.format_exc())
                     progress_bar.empty()
 
-            st.divider()
-            st.subheader("📝 Step 4: Generate Documentation")
-            
-            report_type = st.radio(
-                "Select report type:",
-                ["Structured Report (No LLM)", "AI-Powered Report (Requires API Key)"],
-                help="Structured reports are generated from code analysis. AI-powered reports use LLM for enhanced documentation."
-            )
+            st.markdown("### 4) Generate documentation")
 
-            if report_type == "Structured Report (No LLM)":
-                if st.button("📄 Generate Structured Report", type="primary", use_container_width=True):
-                    with st.spinner("Generating structured report from code analysis..."):
+            if st.button("Generate AI-Powered Report", type="primary", use_container_width=True):
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+
+                status_text.info("Collecting repository context for LLM...")
+                progress_bar.progress(20)
+
+                try:
+                    if "parsed_structured" not in st.session_state or st.session_state["parsed_structured"] is None:
+                        parsed_struct = parse_repo_ast_structured(str(extract_path), max_files=max_files_input)
+                        st.session_state["parsed_structured"] = parsed_struct
+                    else:
+                        parsed_struct = st.session_state["parsed_structured"]
+
+                    progress_bar.progress(40)
+                    status_text.info("Building comprehensive prompt...")
+                    prompt = build_prompt(parsed_struct)
+                    progress_bar.progress(60)
+
+                    if parsed_struct and prompt:
+                        status_text.info("Calling LLM to generate documentation...")
+                        progress_bar.progress(80)
+
+                        report_md = generate_llm_report(prompt)
+                        progress_bar.progress(100)
+
+                        st.success("AI-powered report generated successfully!")
+                        st.markdown(report_md)
+
+                        # Prepare PDF bytes from markdown
                         try:
-                            if "parsed_structured" not in st.session_state or st.session_state["parsed_structured"] is None:
-                                parsed_struct = parse_repo_ast_structured(str(extract_path), max_files=max_files_input)
-                                st.session_state["parsed_structured"] = parsed_struct
-                            else:
-                                parsed_struct = st.session_state["parsed_structured"]
-                            
-                            report_md = generate_markdown_report(parsed_struct)
-                            
-                            st.success("✅ Report generated successfully!")
-                            st.markdown(report_md)
+                            pdf_bytes = markdown_to_pdf_bytes(
+                                report_md,
+                                title=f"{extract_path.name} - AutoDocx AI Documentation"
+                            )
+                        except Exception as pdf_err:
+                            pdf_bytes = None
+                            st.warning(f"Could not generate PDF version: {pdf_err}")
 
-                            # Prepare PDF bytes from markdown
-                            try:
-                                pdf_bytes = markdown_to_pdf_bytes(
-                                    report_md,
-                                    title=f"{extract_path.name} - AutoDocx Documentation"
-                                )
-                            except Exception as pdf_err:
-                                pdf_bytes = None
-                                st.warning(f"Could not generate PDF version: {pdf_err}")
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.download_button(
+                                label="Download Report (Markdown)",
+                                data=report_md,
+                                file_name=f"{extract_path.name}_ai_documentation.md",
+                                mime="text/markdown",
+                                use_container_width=True
+                            )
+                        with col2:
+                            st.download_button(
+                                label="Download Report (PDF)",
+                                data=pdf_bytes if pdf_bytes is not None else b"",
+                                file_name=f"{extract_path.name}_ai_documentation.pdf",
+                                mime="application/pdf",
+                                use_container_width=True,
+                                disabled=pdf_bytes is None
+                            )
+                        with col3:
+                            # Option to view prompt (for debugging)
+                            with st.expander("View Prompt"):
+                                st.code(prompt[:2000] + "..." if len(prompt) > 2000 else prompt)
 
-                            col_md, col_pdf = st.columns(2)
-                            with col_md:
-                                st.download_button(
-                                    label="📥 Download Report (Markdown)",
-                                    data=report_md,
-                                    file_name=f"{extract_path.name}_documentation.md",
-                                    mime="text/markdown",
-                                    use_container_width=True
-                                )
-                            with col_pdf:
-                                st.download_button(
-                                    label="📄 Download Report (PDF)",
-                                    data=pdf_bytes if pdf_bytes is not None else b"",
-                                    file_name=f"{extract_path.name}_documentation.pdf",
-                                    mime="application/pdf",
-                                    use_container_width=True,
-                                    disabled=pdf_bytes is None
-                                )
-                        except Exception as e:
-                            st.error(f"Report generation failed: {e}")
-                            import traceback
-                            with st.expander("Error Details"):
-                                st.code(traceback.format_exc())
-            
-            else:  # AI-Powered Report
-                st.caption("⚠️ Requires OPENAI_API_KEY environment variable. Set it in your .env file or environment.")
-                
-                if st.button("🧠 Generate AI-Powered Report", type="primary", use_container_width=True):
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    status_text.info("🔄 Collecting repository context for LLM...")
-                    progress_bar.progress(20)
-                    
-                    try:
-                        if "parsed_structured" not in st.session_state or st.session_state["parsed_structured"] is None:
-                            parsed_struct = parse_repo_ast_structured(str(extract_path), max_files=max_files_input)
-                            st.session_state["parsed_structured"] = parsed_struct
-                        else:
-                            parsed_struct = st.session_state["parsed_structured"]
-                        
-                        progress_bar.progress(40)
-                        status_text.info("📝 Building comprehensive prompt...")
-                        prompt = build_prompt(parsed_struct)
-                        progress_bar.progress(60)
-
-                        if parsed_struct and prompt:
-                            status_text.info("🤖 Calling LLM to generate documentation...")
-                            progress_bar.progress(80)
-                            
-                            report_md = generate_llm_report(prompt)
-                            progress_bar.progress(100)
-                            
-                            st.success("✅ AI-powered report generated successfully!")
-                            st.markdown(report_md)
-                            
-                            # Prepare PDF bytes from markdown
-                            try:
-                                pdf_bytes = markdown_to_pdf_bytes(
-                                    report_md,
-                                    title=f"{extract_path.name} - AutoDocx AI Documentation"
-                                )
-                            except Exception as pdf_err:
-                                pdf_bytes = None
-                                st.warning(f"Could not generate PDF version: {pdf_err}")
-
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                st.download_button(
-                                    label="📥 Download Report (Markdown)",
-                                    data=report_md,
-                                    file_name=f"{extract_path.name}_ai_documentation.md",
-                                    mime="text/markdown",
-                                    use_container_width=True
-                                )
-                            with col2:
-                                st.download_button(
-                                    label="📄 Download Report (PDF)",
-                                    data=pdf_bytes if pdf_bytes is not None else b"",
-                                    file_name=f"{extract_path.name}_ai_documentation.pdf",
-                                    mime="application/pdf",
-                                    use_container_width=True,
-                                    disabled=pdf_bytes is None
-                                )
-                            with col3:
-                                # Option to view prompt (for debugging)
-                                with st.expander("🔍 View Prompt"):
-                                    st.code(prompt[:2000] + "..." if len(prompt) > 2000 else prompt)
-                            
-                            progress_bar.empty()
-                            status_text.empty()
-                        else:
-                            st.error("Failed to prepare report data.")
-                    except RuntimeError as e:
-                        st.error(f"❌ {str(e)}")
-                        st.info("💡 Tip: Make sure you have set OPENAI_API_KEY in your environment variables.")
-                    except Exception as e:
-                        st.error(f"LLM report generation failed: {e}")
-                        import traceback
-                        with st.expander("Error Details"):
-                            st.code(traceback.format_exc())
-                    finally:
                         progress_bar.empty()
                         status_text.empty()
+                    else:
+                        st.error("Failed to prepare report data.")
+                except RuntimeError as e:
+                        st.error(f"{str(e)}")
+                    st.info("Tip: Make sure you have set OPENAI_API_KEY in your environment variables.")
+                except Exception as e:
+                    st.error(f"LLM report generation failed: {e}")
+                    import traceback
+                    with st.expander("Error Details"):
+                        st.code(traceback.format_exc())
+                finally:
+                    progress_bar.empty()
+                    status_text.empty()
 
         except Exception as e:
-            st.error(f"❌ Error processing upload: {e}")
+            st.error(f"Error processing upload: {e}")
 
     else:
-        st.info("📥 Please upload a `.zip` of your repository to get started.")
+        st.info("Please upload a `.zip` of your repository to get started.")

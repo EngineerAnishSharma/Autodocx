@@ -31,7 +31,7 @@ MAX_FILES_LIMIT = int(os.getenv("MAX_FILES_LIMIT", 500))
 # OpenAI Configuration
 OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", 4000))
+OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", 12000))  # Increased for comprehensive 3-4 page docs
 OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", 0.3))
 
 # Supported file extensions
