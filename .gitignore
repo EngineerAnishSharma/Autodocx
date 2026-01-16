@@ -38,8 +38,9 @@ venv.bak/
 .env
 .env.local
 
-# Streamlit
-.streamlit/
+# Streamlit (keep config, exclude secrets)
+.streamlit/secrets.toml
+.streamlit/cache/
 
 # Uploads and data
 app/data/uploads/
