@@ -59,15 +59,23 @@ def show():
         )
 
         if uploaded_file:
-            try:
-                temp_repo_name, temp_extract_path = handle_uploaded_zip(uploaded_file, uploads_dir)
-                temp_extract_path = Path(temp_extract_path)
-                st.session_state["uploaded_repo_path"] = str(temp_extract_path)
-                st.session_state["uploaded_repo_name"] = temp_repo_name
-                st.success(f"Repository uploaded and extracted successfully: `{temp_repo_name}`")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error processing upload: {e}")
+            # Check if this file was already processed to avoid infinite rerun loop
+            file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+            last_processed_file = st.session_state.get("last_processed_zip_file", None)
+            
+            if last_processed_file != file_id:
+                try:
+                    temp_repo_name, temp_extract_path = handle_uploaded_zip(uploaded_file, uploads_dir)
+                    temp_extract_path = Path(temp_extract_path)
+                    st.session_state["uploaded_repo_path"] = str(temp_extract_path)
+                    st.session_state["uploaded_repo_name"] = temp_repo_name
+                    st.session_state["last_processed_zip_file"] = file_id
+                    st.success(f"Repository uploaded and extracted successfully: `{temp_repo_name}`")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error processing upload: {e}")
+            else:
+                st.success(f"Repository already loaded: `{st.session_state.get('uploaded_repo_name', 'Unknown')}`")
     
     # Tab 2: GitHub URL
     with tab2:
@@ -156,6 +164,8 @@ def show():
                     del st.session_state["parsed_results"]
                 if "parsed_structured" in st.session_state:
                     del st.session_state["parsed_structured"]
+                if "last_processed_zip_file" in st.session_state:
+                    del st.session_state["last_processed_zip_file"]
                 st.rerun()
         
         # Show repository structure
