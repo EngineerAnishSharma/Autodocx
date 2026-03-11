@@ -55,6 +55,16 @@ st.markdown(
         margin-right: 0.35rem;
         margin-bottom: 0.35rem;
     }
+    .doc-preview {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 1rem 1.2rem;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+    }
+    .doc-preview h1, .doc-preview h2, .doc-preview h3 {
+        margin-top: 0.8rem;
+    }
     </style>
     """,
     unsafe_allow_html=True,

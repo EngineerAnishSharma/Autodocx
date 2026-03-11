@@ -98,6 +98,17 @@ def markdown_to_pdf_bytes(markdown_text: str, title: Optional[str] = None) -> by
     """
     Convert markdown text to a PDF and return the PDF as bytes.
     """
+    def _ensure_pdf_bytes(raw_obj) -> bytes:
+        """Normalize output object to bytes and verify PDF signature."""
+        if isinstance(raw_obj, (bytes, bytearray)):
+            data = bytes(raw_obj)
+        else:
+            data = str(raw_obj).encode("latin-1", errors="ignore")
+
+        if not data.startswith(b"%PDF"):
+            raise ValueError("Generated content is not a valid PDF stream")
+        return data
+
     # First try the richer markdown-aware rendering
     try:
         pdf = MarkdownPDF()
@@ -108,10 +119,7 @@ def markdown_to_pdf_bytes(markdown_text: str, title: Optional[str] = None) -> by
 
         # fpdf2: get PDF as bytes/bytearray with dest="S"
         raw = pdf.output(dest="S")
-        if isinstance(raw, (bytes, bytearray)):
-            return bytes(raw)
-        # Fallback: if some backend returns str
-        return str(raw).encode("latin-1", errors="ignore")
+        return _ensure_pdf_bytes(raw)
     except Exception:
         # Fallback: ultra-safe plain-text export (no complex wrapping)
         safe_text = "".join(
@@ -139,8 +147,6 @@ def markdown_to_pdf_bytes(markdown_text: str, title: Optional[str] = None) -> by
             fb.cell(0, 5, line, ln=1)
 
         raw_fb = fb.output(dest="S")
-        if isinstance(raw_fb, (bytes, bytearray)):
-            return bytes(raw_fb)
-        return str(raw_fb).encode("latin-1", errors="ignore")
+        return _ensure_pdf_bytes(raw_fb)
 
 

@@ -21,9 +21,21 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.logger import logger
-from config import OPENAI_API_KEY, OPENAI_MODEL, OPENAI_MAX_TOKENS, OPENAI_TEMPERATURE
 
 load_dotenv()
+
+
+def _create_ollama_client():
+    """Create an OpenAI-compatible client configured for local Ollama."""
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise RuntimeError("openai package not installed. Run: pip install openai") from exc
+
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    # Ollama accepts any non-empty API key with the OpenAI-compatible endpoint.
+    api_key = os.getenv("OLLAMA_API_KEY", "ollama")
+    return OpenAI(base_url=base_url, api_key=api_key)
 
 def load_readme(repo_path: Path) -> str:
     """Return README contents if present."""
@@ -126,68 +138,89 @@ def build_prompt(parsed: Dict) -> str:
     
     prompt_parts = []
     prompt_parts.append(
-        "You are an expert software documentation writer. Your task is to create **comprehensive, detailed, and practical** "
-        "documentation for this project. The documentation should be **3-4 pages long** (approximately 2000-3000 words) "
-        "and contain ALL essential information a new developer needs to understand, set up, and work with this project."
+        "You are a senior software architect and technical writer. "
+        "Generate professional, concise, and structured project documentation in Markdown."
     )
-    
-    prompt_parts.append("\n## Instructions:")
+
     prompt_parts.append(
-        "Generate a **comprehensive and detailed** project documentation report in **Markdown** format. "
-        "The documentation must be **3-4 pages long** with extensive details. Include the following sections "
-        "with thorough explanations (avoid marketing language, be technical and specific):"
+        "\nFollow these rules strictly:\n"
+        "1. Use clear headings with Markdown formatting.\n"
+        "2. Provide structured sections.\n"
+        "3. Use bullet points and tables where necessary.\n"
+        "4. Maintain a professional technical documentation style.\n"
+        "5. Do NOT skip any section.\n"
+        "6. If information is missing, make reasonable assumptions and label them clearly as assumptions."
     )
-    prompt_parts.append("1. **Project Overview** – What the project does, who it is for, and the main problem it solves.")
+
     prompt_parts.append(
-        "2. **Key Features & Use Cases** – Bullet list of main features and typical real-world usage scenarios."
+        "\nReturn documentation in the exact format below and keep section numbering unchanged:\n\n"
+        "# Project Documentation\n\n"
+        "## 1. Project Overview\n"
+        "Include: Project Name: Description: Problem Statement: Objectives: Scope of the Project:\n\n"
+        "## 2. System Architecture\n"
+        "Include: High-Level Architecture(detailed), Components of the System, Technology Stack.\n"
+        "Also include a subsection named '### Use Case Diagram' with a Mermaid `flowchart` code block.\n"
+        "Make the use case diagram user-friendly: use simple actor names (e.g., User, Admin, System), short action labels, and clear left-to-right flow.\n"
+        "After the diagram, add 4-6 bullet points explaining the use cases in plain language for non-technical readers.\n"
+        "Use this table for technology stack:\n"
+        "| Layer | Technology |\n"
+        "|------|-------------|\n"
+        "| Frontend | |\n"
+        "| Backend | |\n"
+        "| Database | |\n"
+        "| Deployment | |\n\n"
+        "## 3. Functional Requirements\n"
+        "Use a table:\n"
+        "| ID | Requirement |\n"
+        "|----|-------------|\n"
+        "| FR1 | |\n"
+        "| FR2 | |\n"
+        "| FR3 | |\n\n"
+        "## 4. Non-Functional Requirements\n"
+        "Include bullet points for: Performance, Scalability, Security, Reliability, Usability.\n\n"
+        "## 5. System Design\n"
+        "### Database Design\n"
+        "Describe tables, key fields, and relationships.\n"
+        "### API Design\n"
+        "Use a table:\n"
+        "| Endpoint | Method | Description |\n"
+        "|---------|--------|-------------|\n"
+        "| | | |\n\n"
+        "## 6. Folder Structure\n"
+        "Provide the project directory structure using a code block tree.\n\n"
+        "## 7. Features\n"
+        "List all major features using bullet points.\n\n"
+        "## 8. User Guide\n"
+        "Explain how users interact with the system step-by-step using a numbered list.\n\n"
+        "## 9. Testing\n"
+        "Include:\n"
+        "### Testing Types\n"
+        "- Unit Testing\n"
+        "- Integration Testing\n"
+        "- System Testing\n"
+        "### Test Cases\n"
+        "Use a table:\n"
+        "| Test Case | Expected Result |\n"
+        "|-----------|----------------|\n"
+        "| | |\n\n"
+        "## 10. Deployment\n"
+        "Include deployment architecture and tools used (Docker, Cloud, etc.).\n\n"
+        "## 11. Security Considerations\n"
+        "Explain authentication, API security, and data protection.\n\n"
+        "## 12. Future Improvements\n"
+        "List potential future enhancements.\n\n"
+        "## 13. References\n"
+        "Include libraries used, tools, and external resources."
     )
+
     prompt_parts.append(
-        "3. **Architecture & Project Structure** – High-level diagram in text plus explanation of how the "
-        "frontend, backend, services, and data stores interact. Summarize important folders and how code is organized."
-    )
-    prompt_parts.append(
-        "4. **Technology Stack** – Languages with **specific version numbers** (e.g., Python 3.9, Node.js 18.x), "
-        "frameworks with versions, major libraries with versions, and any external services (APIs, databases, queues). "
-        "Include version requirements for all critical technologies."
-    )
-    prompt_parts.append(
-        "5. **Dependencies** – **Complete list** of important Python/Node/Java/etc dependencies from package.json, "
-        "requirements.txt, or pom.xml with **exact version numbers** and brief explanations of what each dependency "
-        "is used for. Group by category (e.g., web framework, database, testing, utilities)."
-    )
-    prompt_parts.append(
-        "6. **Important Modules & Files** – For the most important files detected, explain their roles, key classes/"
-        "functions inside them, and how they fit into the overall flow."
-    )
-    prompt_parts.append(
-        "7. **Configuration & Environment** – Describe expected environment variables, config files, and any secrets "
-        "or API keys needed (without revealing real values)."
-    )
-    prompt_parts.append(
-        "8. **Setup & Installation** – Step‑by‑step instructions to run the project locally from a fresh clone. "
-        "Include commands to install dependencies, migrations (if any), and how to start each service."
-    )
-    prompt_parts.append(
-        "9. **Usage Guide** – How to interact with the running app (CLI commands, API endpoints, web UI flows). "
-        "Mention at least the main entrypoints a developer should try."
-    )
-    prompt_parts.append(
-        "10. **Development Guidelines** – Coding conventions, project layout rules, how to add a new feature, run tests, "
-        "and where to put new code."
-    )
-    prompt_parts.append(
-        "11. **Limitations, Risks & Next Steps** – Known issues, technical debt, and sensible next improvements."
-    )
-    
-    prompt_parts.append(
-        "\n**Documentation Requirements:**\n"
-        "- The documentation must be **comprehensive and detailed** (3-4 pages, approximately 2000-3000 words).\n"
-        "- Include **specific version numbers** for all technologies, frameworks, and major dependencies.\n"
-        "- Provide **detailed explanations** for each section - don't be brief.\n"
-        "- Use clear structure with proper Markdown headings, bullet lists, and code blocks where appropriate.\n"
-        "- Include **concrete examples** and **step-by-step instructions** where relevant.\n"
-        "- If something is unknown from the code, say \"Not clearly inferable from repository\" instead of guessing.\n"
-        "- Be thorough: explain architecture patterns, data flow, key algorithms, API endpoints, database schemas, etc."
+        "\nOutput requirements:\n"
+        "- Return well-formatted Markdown only.\n"
+        "- Use tables wherever appropriate.\n"
+        "- Keep explanations concise but clear.\n"
+        "- Include one Mermaid use case diagram in section 2 using actors and system interactions inferred from the repository.\n"
+        "- Keep the use case diagram easy to understand for end users (minimal jargon, readable labels, clear interactions).\n"
+        "- Ground output in repository evidence first; use explicit assumptions only when evidence is missing."
     )
     
     prompt_parts.append("\n---\n## Repository Statistics:")
@@ -232,50 +265,160 @@ def build_prompt(parsed: Dict) -> str:
     return "\n".join(prompt_parts)
 
 
+def _split_text_batches(text: str, chunk_chars: int, max_batches: int) -> List[str]:
+    """Split large text into sentence-aware batches for multi-pass LLM processing."""
+    if not text:
+        return []
+    if len(text) <= chunk_chars:
+        return [text]
+
+    lines = text.splitlines(keepends=True)
+    batches: List[str] = []
+    current: List[str] = []
+    current_len = 0
+
+    for line in lines:
+        line_len = len(line)
+        # If adding this line exceeds chunk size, close the current batch.
+        if current and current_len + line_len > chunk_chars:
+            batches.append("".join(current))
+            current = []
+            current_len = 0
+        current.append(line)
+        current_len += line_len
+
+        if len(batches) >= max_batches:
+            break
+
+    if current and len(batches) < max_batches:
+        batches.append("".join(current))
+
+    return batches
+
+
+def _chat_completion(client, model: str, system_content: str, user_content: str, temperature: float, max_tokens: int) -> str:
+    """Execute a single chat completion call and return the assistant content."""
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content},
+        ],
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    content = resp.choices[0].message.content
+    return content.strip() if content else ""
+
+
 def generate_llm_report(prompt: str, model: Optional[str] = None) -> str:
-    """Call OpenAI-compatible client if available; otherwise raise a clear error."""
-    api_key = OPENAI_API_KEY or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set in environment variables. Please set it to use LLM report generation.")
-    
-    model = model or OPENAI_MODEL
-    
+    """Generate LLM report via local Ollama with optional batch processing."""
+    model = model or os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+    temperature = float(os.getenv("OLLAMA_TEMPERATURE", "0.3"))
+    max_tokens = int(os.getenv("OLLAMA_MAX_TOKENS", "12000"))
+    batch_enabled = os.getenv("OLLAMA_BATCH_ENABLED", "true").lower() in {"1", "true", "yes"}
+    chunk_chars = int(os.getenv("OLLAMA_BATCH_CHUNK_CHARS", "12000"))
+    max_batches = int(os.getenv("OLLAMA_BATCH_MAX", "4"))
+
+    system_content = (
+        "You are a senior software architect and technical writer. "
+        "Strictly follow the user-provided output template and keep section numbering exactly as requested. "
+        "Produce professional technical documentation using markdown headings, bullets, and tables. "
+        "Do not skip sections. Ground content in repository evidence, and when information is missing, "
+        "make reasonable assumptions and label them clearly as assumptions. "
+        "For use case diagrams, optimize for readability for non-technical readers."
+    )
+
     try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise RuntimeError("openai package not installed. Run: pip install openai") from exc
-    
-    try:
-        logger.info(f"Generating LLM report using model: {model}")
-        client = OpenAI(api_key=api_key)
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an expert technical documentation writer. "
-                        "Create comprehensive, detailed documentation (3-4 pages, 2000-3000 words) that includes:\n"
-                        "- ALL essential information: technology versions, complete dependency lists, architecture details.\n"
-                        "- Specific version numbers for all technologies, frameworks, and major dependencies.\n"
-                        "- Step-by-step setup instructions with exact commands.\n"
-                        "- Detailed explanations of code structure, key files, and their purposes.\n"
-                        "- Usage examples, API endpoints, configuration details.\n"
-                        "- Development guidelines and contribution instructions.\n"
-                        "Be thorough, specific, and technical. Include concrete examples and code snippets where relevant."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=OPENAI_TEMPERATURE,
-            max_tokens=OPENAI_MAX_TOKENS,
+        logger.info(f"Generating LLM report using Ollama model: {model}")
+        client = _create_ollama_client()
+
+        # Single-pass mode remains available for small prompts or explicit opt-out.
+        if not batch_enabled or len(prompt) <= chunk_chars:
+            content = _chat_completion(
+                client=client,
+                model=model,
+                system_content=system_content,
+                user_content=prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            logger.info("LLM report generated successfully (single-pass)")
+            return content
+
+        logger.info(
+            f"Batch mode enabled for large prompt (length={len(prompt)}, chunk_chars={chunk_chars}, max_batches={max_batches})"
         )
-        content = resp.choices[0].message.content
-        logger.info("LLM report generated successfully")
-        return content.strip() if content else ""
+
+        # Separate high-level instructions from heavy repository context for better synthesis.
+        split_marker = "\n---\n## Repository Statistics:"
+        if split_marker in prompt:
+            instructions_block, context_block = prompt.split(split_marker, 1)
+            context_block = split_marker + context_block
+        else:
+            instructions_block = prompt
+            context_block = ""
+
+        context_batches = _split_text_batches(context_block, chunk_chars=chunk_chars, max_batches=max_batches)
+
+        if not context_batches:
+            content = _chat_completion(
+                client=client,
+                model=model,
+                system_content=system_content,
+                user_content=prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            logger.info("LLM report generated successfully (fallback single-pass)")
+            return content
+
+        batch_summaries: List[str] = []
+        for idx, batch in enumerate(context_batches, start=1):
+            logger.info(f"Processing batch {idx}/{len(context_batches)}")
+            batch_prompt = (
+                "Summarize this repository context chunk for technical documentation synthesis.\n"
+                "Return concise evidence only using bullet points with these labels where applicable:\n"
+                "- Architecture\n- Components\n- Tech Stack\n- Functional Requirements\n"
+                "- Non-Functional Requirements\n- Database/API\n- Features\n- User Flow\n"
+                "- Testing/Deployment/Security\n- Future Improvements\n- References\n"
+                "If data is missing, write: Not clearly inferable from repository.\n\n"
+                f"Context chunk {idx}/{len(context_batches)}:\n\n{batch}"
+            )
+            summary = _chat_completion(
+                client=client,
+                model=model,
+                system_content=system_content,
+                user_content=batch_prompt,
+                temperature=temperature,
+                max_tokens=max(1200, min(max_tokens, 4000)),
+            )
+            batch_summaries.append(f"### Batch {idx} Summary\n{summary}")
+
+        final_prompt = (
+            f"{instructions_block}\n\n"
+            "Use the consolidated evidence below to produce the final documentation. "
+            "Preserve the exact 14-section format and include the required use case diagram.\n\n"
+            "## Consolidated Evidence From Batch Processing\n\n"
+            + "\n\n".join(batch_summaries)
+        )
+
+        content = _chat_completion(
+            client=client,
+            model=model,
+            system_content=system_content,
+            user_content=final_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        logger.info("LLM report generated successfully (batch mode)")
+        return content
     except Exception as e:
-        logger.error(f"Error calling OpenAI API: {e}", exc_info=True)
-        raise RuntimeError(f"Error calling OpenAI API: {str(e)}") from e
+        logger.error(f"Error calling Ollama API: {e}", exc_info=True)
+        raise RuntimeError(
+            "Error calling Ollama. Ensure Ollama is running and model 'qwen2.5:14b' is available. "
+            "Try: ollama run qwen2.5:14b"
+        ) from e
 
 
 def generate_markdown_report(parsed: Dict, include_llm: bool = False) -> str:
