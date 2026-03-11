@@ -1,315 +1,525 @@
 """
 PDF utilities for AutoDocx.
-
-Converts Markdown text into a styled PDF using fpdf2.
-The renderer supports common markdown elements used in reports.
+Converts Markdown to a styled PDF using fpdf2.
+Properly renders headings, bold/italic, tables, bullets, code blocks.
 """
+
 import re
 from typing import Optional
-
 from fpdf import FPDF
+from datetime import datetime
+import base64
+import zlib
+import urllib.request
+import io
 
 
-def _sanitize_text(line: str) -> str:
-    """
-    Remove characters that can't be rendered by core PDF fonts
-    (e.g. emojis, some unicode symbols) to avoid rendering errors.
-    """
-    # Keep basic printable ASCII; replace others with space
-    return "".join(ch if 32 <= ord(ch) <= 126 else " " for ch in line)
+# ---------------------------------------------------------------------------
+# Text helpers
+# ---------------------------------------------------------------------------
 
 
-def _soft_wrap(line: str, max_chunk: int = 80) -> str:
-    """
-    Soft-wrap very long words/segments by inserting spaces so that
-    fpdf2's MultiCell never has to fit an infinite-long word on one line.
-    """
-    if len(line) <= max_chunk:
-        return line
+def _safe(text: str) -> str:
+    """Keep only printable Latin-1 characters (0x20-0xFF excluding 0x7F)."""
+    return "".join(
+        ch if (0x20 <= ord(ch) <= 0x7E) or (0xA0 <= ord(ch) <= 0xFF) else " "
+        for ch in str(text)
+    )
 
-    parts = []
-    current = ""
-    for ch in line:
-        current += ch
-        if len(current) >= max_chunk:
-            parts.append(current)
-            current = ""
-    if current:
-        parts.append(current)
+
+def _soft_wrap(text: str, n: int = 70) -> str:
+    """Break very long unbreakable tokens so fpdf2 can wrap them."""
+    if len(text) <= n:
+        return text
+    parts, cur = [], ""
+    for ch in text:
+        cur += ch
+        if len(cur) >= n:
+            parts.append(cur)
+            cur = ""
+    if cur:
+        parts.append(cur)
     return " ".join(parts)
 
 
-def _clean_inline_markdown(text: str) -> str:
-    """Strip simple inline markdown markers for cleaner PDF text."""
-    # Images: keep a readable placeholder label.
-    text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"[Image: \1]", text)
-    # Links: keep label and URL in plain text.
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
-
-    for marker in ("**", "__", "~~", "`", "*", "_"):
-        text = text.replace(marker, "")
+def _strip_md(text: str) -> str:
+    """Return plain text — strip all common inline markdown markers."""
+    text = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"[Image: \1]", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"\*{3}([^*\n]+)\*{3}", r"\1", text)
+    text = re.sub(r"_{3}([^_\n]+)_{3}", r"\1", text)
+    text = re.sub(r"\*{2}([^*\n]+)\*{2}", r"\1", text)
+    text = re.sub(r"_{2}([^_\n]+)_{2}", r"\1", text)
+    text = re.sub(r"\*([^*\n]+)\*", r"\1", text)
+    text = re.sub(r"_([^_\n]+)_", r"\1", text)
+    text = re.sub(r"~~([^~\n]+)~~", r"\1", text)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
     return text.strip()
 
 
-def _split_table_row(row: str) -> list[str]:
-    """Split a markdown table row into cleaned cells."""
-    cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
-    return [_clean_inline_markdown(cell) for cell in cells]
+def _inline_segments(text: str):
+    """
+    Split a markdown inline string into (bold, italic, plain_text) tuples.
+    Used to render **bold** and *italic* with actual font styles.
+    """
+    segments = []
+    pattern = re.compile(
+        r"(\*{3}[^*\n]+?\*{3}"
+        r"|\*{2}[^*\n]+?\*{2}"
+        r"|\*[^*\n]+?\*"
+        r"|_{2}[^_\n]+?_{2}"
+        r"|_[^_\n]+?_"
+        r"|`[^`\n]+?`)"
+    )
+    pos = 0
+    for m in pattern.finditer(text):
+        if m.start() > pos:
+            chunk = _safe(_soft_wrap(text[pos : m.start()]))
+            if chunk.strip():
+                segments.append((False, False, chunk))
+        raw = m.group(0)
+        if raw.startswith("***") or raw.startswith("___"):
+            segments.append((True, True, _safe(_soft_wrap(raw[3:-3]))))
+        elif raw.startswith("**") or raw.startswith("__"):
+            segments.append((True, False, _safe(_soft_wrap(raw[2:-2]))))
+        elif raw.startswith("*") or raw.startswith("_"):
+            segments.append((False, True, _safe(_soft_wrap(raw[1:-1]))))
+        elif raw.startswith("`"):
+            segments.append((False, False, _safe(_soft_wrap(raw[1:-1]))))
+        pos = m.end()
+    if pos < len(text):
+        chunk = _safe(_soft_wrap(text[pos:]))
+        if chunk.strip():
+            segments.append((False, False, chunk))
+    if not segments:
+        segments = [(False, False, _safe(_soft_wrap(text)))]
+    return segments
+
+
+def _is_separator(line: str) -> bool:
+    """True if the line is a markdown table separator like |---|:---|."""
+    s = line.strip()
+    return bool(s) and "|" in s and bool(re.fullmatch(r"[\s|:\-]+", s))
+
+
+def _split_row(row: str):
+    return [_strip_md(c.strip()) for c in row.strip().strip("|").split("|")]
+
+
+# ---------------------------------------------------------------------------
+# PDF class
+# ---------------------------------------------------------------------------
 
 
 class MarkdownPDF(FPDF):
-    """Simple PDF renderer for markdown-like text."""
+    NAVY = (30, 58, 138)
+    LIGHT_BLUE = (219, 234, 254)
+    CODE_BG = (245, 245, 245)
+    MERMAID_BG = (230, 240, 255)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.report_title = ""
-        self.set_auto_page_break(auto=True, margin=15)
-        # Reasonable margins to ensure space for text
-        self.set_margins(left=15, top=15, right=15)
+        self.set_auto_page_break(auto=True, margin=18)
+        self.set_margins(left=18, top=18, right=18)
         self.add_page()
-        # Core fonts don't support full unicode, but are enough for sanitized ASCII markdown
         self.set_font("Helvetica", size=11)
 
     def header(self):
-        """Draw a lightweight header on each page."""
         if self.page_no() == 1:
             return
-        self.set_font("Helvetica", "I", 9)
-        header_text = _sanitize_text(self.report_title)[:80] if self.report_title else "AutoDocx Report"
-        self.set_text_color(100, 100, 100)
-        self.cell(0, 8, header_text, align="L")
-        self.ln(8)
-        self.set_draw_color(220, 220, 220)
+        self.set_font("Helvetica", "I", 8)
+        self.set_text_color(130, 130, 130)
+        title = (
+            _safe(self.report_title)[:90] if self.report_title else "AutoDocx Report"
+        )
+        self.cell(0, 6, title, align="L")
+        self.ln(6)
+        self.set_draw_color(200, 200, 200)
         self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
-        self.ln(3)
+        self.ln(2)
         self.set_text_color(0, 0, 0)
 
     def footer(self):
-        """Draw page number footer on each page."""
         self.set_y(-12)
-        self.set_font("Helvetica", "I", 9)
-        self.set_text_color(110, 110, 110)
+        self.set_font("Helvetica", "I", 8)
+        self.set_text_color(130, 130, 130)
         self.cell(0, 6, f"Page {self.page_no()}", align="C")
         self.set_text_color(0, 0, 0)
 
-    def _render_table(self, header_cells: list[str], rows: list[list[str]]):
-        """Render markdown table as bordered grid."""
-        if not header_cells:
-            return
+    def _reset(self, size=11):
+        self.set_font("Helvetica", size=size)
+        self.set_text_color(0, 0, 0)
 
-        table_width = self.w - self.l_margin - self.r_margin
-        col_count = max(len(header_cells), max((len(row) for row in rows), default=0))
+    def _write_inline(self, text: str, lh: float = 5.5):
+        """Write text honouring **bold** and *italic* markers."""
+        for bold, italic, chunk in _inline_segments(text):
+            style = ("B" if bold else "") + ("I" if italic else "")
+            self.set_font("Helvetica", style, 11)
+            if chunk:
+                self.write(lh, chunk)
+        self._reset()
+
+    # ---- headings --------------------------------------------------------
+
+    def _h1(self, title: str):
+        self.ln(3)
+        self.set_fill_color(*self.NAVY)
+        self.set_text_color(255, 255, 255)
+        self.set_font("Helvetica", "B", 16)
+        self.multi_cell(0, 10, _safe(_soft_wrap(title)), fill=True, align="L")
+        self.ln(2)
+        self._reset()
+
+    def _h2(self, title: str):
+        self.ln(2)
+        self.set_fill_color(*self.LIGHT_BLUE)
+        self.set_text_color(*self.NAVY)
+        self.set_font("Helvetica", "B", 13)
+        self.multi_cell(0, 8, _safe(_soft_wrap(title)), fill=True, align="L")
+        self.ln(1)
+        self._reset()
+
+    def _h3(self, title: str):
+        self.ln(2)
+        self.set_text_color(*self.NAVY)
+        self.set_font("Helvetica", "B", 12)
+        self.multi_cell(0, 7, _safe(_soft_wrap(title)))
+        y = self.get_y()
+        self.set_draw_color(*self.NAVY)
+        self.line(self.l_margin, y, self.w - self.r_margin, y)
+        self.ln(2)
+        self._reset()
+
+    def _h4(self, title: str):
+        self.ln(1)
+        self.set_font("Helvetica", "B", 11)
+        self.set_text_color(50, 50, 50)
+        self.multi_cell(0, 6, _safe(_soft_wrap(title)))
+        self.ln(1)
+        self._reset()
+
+    def _hN(self, title: str):
+        self.ln(1)
+        self.set_font("Helvetica", "B", 10)
+        self.multi_cell(0, 5.5, _safe(_soft_wrap(title)))
+        self._reset()
+
+    # ---- table -----------------------------------------------------------
+
+    def _table(self, headers, rows):
+        if not headers:
+            return
+        col_count = max(len(headers), max((len(r) for r in rows), default=0))
         if col_count == 0:
             return
 
-        col_width = table_width / col_count
-        row_height = 7
-        max_chars = max(int(col_width / 2.2), 6)
+        self.ln(2)
+        try:
+            with self.table(text_align="LEFT") as ftable:
+                # header row
+                self.set_font("Helvetica", "B", 10)
+                self.set_fill_color(*self.NAVY)
+                self.set_text_color(255, 255, 255)
+                header_row = ftable.row()
+                for i in range(col_count):
+                    v = _safe(headers[i]) if i < len(headers) else ""
+                    header_row.cell(v)
 
-        def _fit(text: str) -> str:
-            clean = _clean_inline_markdown(text)
-            return clean if len(clean) <= max_chars else clean[: max_chars - 3] + "..."
+                # data rows
+                self.set_font("Helvetica", size=9)
+                self.set_text_color(0, 0, 0)
+                for idx, row in enumerate(rows):
+                    data_row = ftable.row()
+                    for i in range(col_count):
+                        v = _safe(row[i]) if i < len(row) else ""
+                        data_row.cell(v)
+        except Exception as e:
+            print(f"TABLE ERROR: {e}")
+        self.ln(3)
+        self._reset()
 
-        def _page_break_if_needed(next_row_height: float):
-            if self.get_y() + next_row_height > self.h - self.b_margin:
-                self.add_page()
+    # ---- code block ------------------------------------------------------
 
-        # Header row
-        _page_break_if_needed(row_height)
-        self.set_fill_color(240, 240, 240)
-        self.set_font("Helvetica", "B", 10)
-        for i in range(col_count):
-            val = _fit(header_cells[i]) if i < len(header_cells) else ""
-            self.cell(col_width, row_height, _sanitize_text(val), border=1, align="L", fill=True)
-        self.ln(row_height)
+    def _code(self, lines_in, lang: str):
+        if lang == "mermaid" and lines_in:
+            self.ln(2)
+            try:
+                # Attempt to render mermaid via Kroki API
+                data = "\n".join(lines_in).encode("utf-8")
+                compressed = zlib.compress(data, 9)
+                encoded = base64.urlsafe_b64encode(compressed).decode("ascii")
+                url = f"https://kroki.io/mermaid/png/{encoded}"
 
-        # Body rows
-        self.set_font("Helvetica", size=10)
-        for row in rows:
-            _page_break_if_needed(row_height)
-            for i in range(col_count):
-                val = _fit(row[i]) if i < len(row) else ""
-                self.cell(col_width, row_height, _sanitize_text(val), border=1, align="L")
-            self.ln(row_height)
+                req = urllib.request.Request(
+                    url, headers={"User-Agent": "AutoDocx/1.0"}
+                )
+                res = urllib.request.urlopen(req, timeout=10)
+                img_data = res.read()
+
+                avail_w = self.w - self.l_margin - self.r_margin
+                self.image(io.BytesIO(img_data), w=avail_w)
+            except Exception as e:
+                print(f"MERMAID ERROR: {e}")
+                self.set_fill_color(*self.MERMAID_BG)
+                self.set_text_color(*self.NAVY)
+                self.set_font("Helvetica", "I", 10)
+                self.multi_cell(
+                    0,
+                    7,
+                    "[ Diagram (Mermaid) - Failed to load from Kroki API. Open Markdown to view. ]",
+                    fill=True,
+                    align="C",
+                )
+            self.ln(2)
+            self._reset()
+            return
 
         self.ln(2)
+        self.set_fill_color(*self.CODE_BG)
+        self.set_font("Courier", size=8)
+        self.set_text_color(30, 30, 30)
+        for raw_line in lines_in:
+            safe_line = _safe(raw_line.rstrip())
+            # chunk very long lines
+            while len(safe_line) > 95:
+                chunk, safe_line = safe_line[:95], safe_line[95:]
+                if self.get_y() + 4.5 > self.h - self.b_margin:
+                    self.add_page()
+                self.multi_cell(0, 4.5, chunk, fill=True, border=0)
+            if self.get_y() + 4.5 > self.h - self.b_margin:
+                self.add_page()
+            self.multi_cell(0, 4.5, safe_line, fill=True, border=0)
+        self.ln(2)
+        self._reset()
+
+    # ---- main renderer ---------------------------------------------------
 
     def add_markdown(self, text: str):
-        """Render markdown-like content with headings, lists, and code blocks."""
-        in_code_block = False
+        """Parse markdown and render it into the PDF."""
+        # normalise line endings
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        lines = text.split("\n")
+        in_code = False
         code_lang = ""
-        lines = text.splitlines()
+        code_lines = []
         idx = 0
 
         while idx < len(lines):
-            line = _sanitize_text(lines[idx].rstrip("\n"))
-            stripped = line.strip()
+            raw = lines[idx]
+            stripped = raw.strip()
 
+            # ---- fenced code block ---
             if stripped.startswith("```"):
-                fence_lang = stripped[3:].strip().lower()
-                in_code_block = not in_code_block
-                if in_code_block:
-                    code_lang = fence_lang
-                    self.ln(1)
-                    if code_lang == "mermaid":
-                        self.set_font("Helvetica", "I", 10)
-                        self.multi_cell(0, 5, "Diagram (Mermaid):")
-                    else:
-                        self.set_font("Courier", size=9)
+                if not in_code:
+                    in_code = True
+                    code_lang = stripped[3:].strip().lower()
+                    code_lines = []
                 else:
+                    try:
+                        self._code(code_lines, code_lang)
+                    except Exception:
+                        pass
+                    in_code = False
                     code_lang = ""
-                    self.set_font("Helvetica", size=11)
-                    self.ln(1)
+                    code_lines = []
                 idx += 1
                 continue
 
-            if in_code_block:
-                if code_lang == "mermaid":
-                    mer = stripped
-                    if mer and not mer.startswith(("flowchart", "graph", "sequenceDiagram", "classDiagram")):
-                        mer = mer.replace("-->", " -> ")
-                        mer = mer.replace("--", " - ")
-                        mer = mer.replace("|", " ")
-                        self.multi_cell(0, 5, _soft_wrap(f"- {_clean_inline_markdown(mer)}"))
-                else:
-                    code_line = _soft_wrap(line)
-                    self.multi_cell(0, 4.5, code_line)
+            if in_code:
+                code_lines.append(raw)
                 idx += 1
                 continue
 
+            # ---- blank line ---
             if not stripped:
                 self.ln(3)
                 idx += 1
                 continue
 
-            # Markdown table: header row + separator row + data rows.
+            # ---- heading ---
+            hm = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+            if hm:
+                try:
+                    level = len(hm.group(1))
+                    title = _strip_md(hm.group(2))
+                    if level == 1:
+                        self._h1(title)
+                    elif level == 2:
+                        self._h2(title)
+                    elif level == 3:
+                        self._h3(title)
+                    elif level == 4:
+                        self._h4(title)
+                    else:
+                        self._hN(title)
+                except Exception:
+                    pass
+                idx += 1
+                continue
+
+            # ---- horizontal rule ---
+            if re.fullmatch(r"[-_*]{3,}", stripped.replace(" ", "")):
+                try:
+                    y = self.get_y()
+                    self.set_draw_color(180, 180, 180)
+                    self.line(self.l_margin, y, self.w - self.r_margin, y)
+                    self.ln(4)
+                except Exception:
+                    pass
+                idx += 1
+                continue
+
+            # ---- table ---
             if (
                 stripped.startswith("|")
                 and idx + 1 < len(lines)
-                and re.fullmatch(r"\s*\|?\s*[:\- ]+\|[|:\- ]+\|?\s*", _sanitize_text(lines[idx + 1].strip()))
+                and _is_separator(lines[idx + 1])
             ):
-                header_cells = _split_table_row(stripped)
-                idx += 2  # Skip header and separator row
-
-                data_rows: list[list[str]] = []
-                while idx < len(lines) and _sanitize_text(lines[idx].strip()).startswith("|"):
-                    data_rows.append(_split_table_row(_sanitize_text(lines[idx])))
-                    idx += 1
-
-                self._render_table(header_cells, data_rows)
+                try:
+                    headers = _split_row(stripped)
+                    idx += 2
+                    data_rows = []
+                    while idx < len(lines) and lines[idx].strip().startswith("|"):
+                        data_rows.append(_split_row(lines[idx]))
+                        idx += 1
+                    self._table(headers, data_rows)
+                except Exception:
+                    pass
                 continue
 
-            heading_match = re.match(r"^(#{1,6})\s+(.+)$", stripped)
-            if heading_match:
-                level = len(heading_match.group(1))
-                title = _clean_inline_markdown(heading_match.group(2))
-                size_map = {1: 18, 2: 15, 3: 13, 4: 12, 5: 11, 6: 11}
-                style = "B" if level <= 4 else ""
-                self.set_font("Helvetica", style, size_map[level])
-                self.multi_cell(0, 7 if level <= 2 else 6, _soft_wrap(title))
-                self.ln(1)
-                self.set_font("Helvetica", size=11)
+            # ---- unordered list ---
+            ul = re.match(r"^(\s*)[-*+]\s+(.+)$", raw)
+            if ul:
+                try:
+                    indent = min(len(ul.group(1)), 16)
+                    item = ul.group(2)
+                    if self.get_y() + 5.5 > self.h - self.b_margin:
+                        self.add_page()
+                    # Use hyphen - safe in all Latin-1 fonts
+                    self.set_x(self.l_margin + indent)
+                    self.set_font("Helvetica", "B", 11)
+                    self.cell(5, 5.5, "-")
+                    self.set_font("Helvetica", size=11)
+                    self._write_inline(item, 5.5)
+                    self.ln(5.5)
+                except Exception:
+                    pass
                 idx += 1
                 continue
 
-            marker_only = stripped.replace(" ", "")
-            if re.fullmatch(r"[-_*]{3,}", marker_only):
-                y = self.get_y()
-                self.line(15, y, self.w - 15, y)
-                self.ln(3)
+            # ---- ordered list ---
+            ol = re.match(r"^(\s*)(\d+)\.\s+(.+)$", raw)
+            if ol:
+                try:
+                    indent = min(len(ol.group(1)), 16)
+                    num = ol.group(2)
+                    item = ol.group(3)
+                    if self.get_y() + 5.5 > self.h - self.b_margin:
+                        self.add_page()
+                    self.set_x(self.l_margin + indent)
+                    self.set_font("Helvetica", "B", 11)
+                    self.cell(7, 5.5, f"{num}.")
+                    self.set_font("Helvetica", size=11)
+                    self._write_inline(item, 5.5)
+                    self.ln(5.5)
+                except Exception:
+                    pass
                 idx += 1
                 continue
 
-            unordered = re.match(r"^(\s*)[-*+]\s+(.+)$", line)
-            if unordered:
-                indent = min(len(unordered.group(1)), 12)
-                item_text = _clean_inline_markdown(unordered.group(2))
-                self.set_x(15 + indent)
-                self.multi_cell(0, 5, _soft_wrap(f"- {item_text}"))
+            # ---- blockquote ---
+            bq = re.match(r"^\s*>\s?(.*)$", raw)
+            if bq:
+                try:
+                    self.set_fill_color(240, 244, 255)
+                    self.set_text_color(60, 60, 60)
+                    self.set_font("Helvetica", "I", 10)
+                    self.set_x(self.l_margin + 4)
+                    self.multi_cell(
+                        0, 5.5, _safe(_soft_wrap(_strip_md(bq.group(1)))), fill=True
+                    )
+                    self._reset()
+                except Exception:
+                    pass
                 idx += 1
                 continue
 
-            ordered = re.match(r"^(\s*)(\d+)\.\s+(.+)$", line)
-            if ordered:
-                indent = min(len(ordered.group(1)), 12)
-                num = ordered.group(2)
-                item_text = _clean_inline_markdown(ordered.group(3))
-                self.set_x(15 + indent)
-                self.multi_cell(0, 5, _soft_wrap(f"{num}. {item_text}"))
-                idx += 1
-                continue
-
-            quote_match = re.match(r"^\s*>\s?(.*)$", line)
-            if quote_match:
-                quote_text = _clean_inline_markdown(quote_match.group(1))
-                self.set_x(19)
-                self.multi_cell(0, 5, _soft_wrap(f"| {quote_text}"))
-                idx += 1
-                continue
-
-            plain = _clean_inline_markdown(stripped)
-            self.multi_cell(0, 5, _soft_wrap(plain))
+            # ---- plain paragraph ---
+            try:
+                if self.get_y() + 6 > self.h - self.b_margin:
+                    self.add_page()
+                self._write_inline(stripped, 5.5)
+                self.ln(5.5)
+            except Exception:
+                pass
             idx += 1
 
 
-def markdown_to_pdf_bytes(markdown_text: str, title: Optional[str] = None) -> bytes:
-    """
-    Convert markdown text to a PDF and return the PDF as bytes.
-    """
-    def _ensure_pdf_bytes(raw_obj) -> bytes:
-        """Normalize output object to bytes and verify PDF signature."""
-        if isinstance(raw_obj, (bytes, bytearray)):
-            data = bytes(raw_obj)
-        else:
-            data = str(raw_obj).encode("latin-1", errors="ignore")
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
+
+def markdown_to_pdf_bytes(markdown_text: str, title: Optional[str] = None) -> bytes:
+    """Convert markdown string to PDF bytes."""
+
+    def _to_bytes(raw) -> bytes:
+        data = (
+            bytes(raw)
+            if isinstance(raw, (bytes, bytearray))
+            else str(raw).encode("latin-1", errors="ignore")
+        )
         if not data.startswith(b"%PDF"):
-            raise ValueError("Generated content is not a valid PDF stream")
+            raise ValueError("Not a valid PDF stream")
         return data
 
-    # First try the richer markdown-aware rendering
     try:
         pdf = MarkdownPDF()
         if title:
             pdf.report_title = title
             pdf.set_title(title)
-            pdf.set_font("Helvetica", "B", 15)
-            pdf.multi_cell(0, 8, _sanitize_text(title))
+            # title banner
+            pdf.set_fill_color(30, 58, 138)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_font("Helvetica", "B", 16)
+            pdf.multi_cell(0, 10, _safe(title), fill=True, align="C")
             pdf.ln(2)
-            pdf.set_font("Helvetica", size=11)
+            pdf.set_font("Helvetica", "I", 9)
+            pdf.set_text_color(100, 100, 100)
+            pdf.cell(
+                0,
+                6,
+                f"Generated by AutoDocx  |  {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                align="C",
+            )
+            pdf.ln(8)
+            pdf.set_text_color(0, 0, 0)
 
         pdf.add_markdown(markdown_text)
+        return _to_bytes(pdf.output())
 
-        # fpdf2: get PDF as bytes/bytearray with dest="S"
-        raw = pdf.output(dest="S")
-        return _ensure_pdf_bytes(raw)
-    except Exception:
-        # Fallback: ultra-safe plain-text export (no complex wrapping)
-        safe_text = "".join(
-            ch if (ch == "\n" or 32 <= ord(ch) <= 126) else " "
+    except Exception as e:
+        import traceback
+
+        print(f"PDF GENERATION CRASHED: {e}")
+        traceback.print_exc()
+
+        # Ultra-safe plain-text fallback
+        safe = "".join(
+            ch if (ch == "\n" or 0x20 <= ord(ch) <= 0x7E) else " "
             for ch in markdown_text
         )
-
         fb = FPDF()
         fb.set_auto_page_break(auto=True, margin=15)
-        fb.set_margins(left=15, top=15, right=15)
+        fb.set_margins(15, 15, 15)
         fb.add_page()
-        fb.set_font("Helvetica", size=11)
-
+        fb.set_font("Helvetica", size=10)
         if title:
-            fb.set_font("Helvetica", "B", 14)
-            fb.cell(0, 8, _sanitize_text(title)[:80], ln=1)
-            fb.ln(4)
-            fb.set_font("Helvetica", size=11)
-
-        # Limit to first N lines / chars to keep it simple and robust
-        max_lines = 300
-        lines = safe_text.splitlines()[:max_lines]
-        for raw in lines:
-            line = _sanitize_text(raw)[:100]
-            fb.cell(0, 5, line, ln=1)
-
-        raw_fb = fb.output(dest="S")
-        return _ensure_pdf_bytes(raw_fb)
-
-
+            fb.set_font("Helvetica", "B", 13)
+            fb.cell(0, 8, _safe(title)[:80])
+            fb.ln(10)
+            fb.set_font("Helvetica", size=10)
+        for line in safe.splitlines()[:500]:
+            fb.multi_cell(0, 5, _safe(line)[:120])
+        return _to_bytes(fb.output())
