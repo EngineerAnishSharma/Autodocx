@@ -88,7 +88,7 @@ with c1:
         <div class="card">
             <div class="pill">Multi-language</div>
             <h5>Repository analysis</h5>
-            <p class="muted">Upload a ZIP, safely extract, and preview structure instantly.</p>
+            <p class="muted">Upload a ZIP, Github repository, safely extract, and preview structure instantly.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -110,22 +110,11 @@ with c3:
         <div class="card">
             <div class="pill">Markdown & PDF</div>
             <h5>Instant documentation</h5>
-            <p class="muted">Structured reports offline, or richer AI-powered docs when you have an API key.</p>
+            <p class="muted">Structured reports offline, or richer AI-powered documents with proper and clear results.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
-
-st.markdown("### Get started")
-st.markdown(
-    """
-    <div class="card">
-        <strong>Steps:</strong> Upload ZIP → Analyze → Generate docs (Markdown & PDF)  
-        <span class="muted">Keep it simple: everything you need is below.</span>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
 
 # Main workflow (upload & docs)
 from pages import _1_upload as upload_page

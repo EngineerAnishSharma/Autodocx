@@ -16,7 +16,6 @@ Features:
 import streamlit as st
 from pathlib import Path
 import time
-import re
 
 from components.uploader import handle_uploaded_zip, handle_github_url
 from utils.file_utils import list_repo_tree
@@ -26,25 +25,6 @@ from utils.pdf_utils import markdown_to_pdf_bytes
 from utils.github_utils import check_git_installed, validate_github_url
 
 PAGE_TITLE = "📦 Upload Repository"
-
-
-def _split_sections(markdown_text: str):
-    """Split markdown content by level-2 headings for easier in-app navigation."""
-    if not markdown_text:
-        return []
-
-    matches = list(re.finditer(r"^##\s+(.+)$", markdown_text, flags=re.MULTILINE))
-    if not matches:
-        return []
-
-    sections = []
-    for i, match in enumerate(matches):
-        title = match.group(1).strip()
-        start = match.start()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(markdown_text)
-        content = markdown_text[start:end].strip()
-        sections.append((title, content))
-    return sections
 
 
 def show():
@@ -68,9 +48,7 @@ def show():
             repo_name = st.session_state.get("uploaded_repo_name", extract_path.name)
     
     # Tab 1: ZIP Upload
-    with tab1:
-        st.caption("Max size: 100 MB. We safely extract and prep it for analysis.")
-        
+    with tab1:        
         uploaded_file = st.file_uploader(
             "📁 Upload repository (.zip)",
             type=["zip"],
@@ -99,7 +77,6 @@ def show():
     
     # Tab 2: GitHub URL
     with tab2:
-        st.caption("Directly clone from GitHub without downloading ZIP files.")
         
         # Check if git is installed
         git_installed, git_info = check_git_installed()
@@ -131,12 +108,6 @@ def show():
                 placeholder="main",
                 help="Leave empty to use the default branch"
             )
-        
-        # Example URLs
-        with st.expander("Example URLs", expanded=False):
-            st.code("https://github.com/octocat/Hello-World")
-            st.code("https://github.com/pallets/flask")
-            st.code("https://github.com/facebook/react")
         
         # Clone repository when button is clicked
         if clone_button and github_url:
@@ -354,61 +325,21 @@ def show():
 
                     st.success("AI-powered report generated successfully!")
 
-                    sections = _split_sections(report_md)
                     words_count = len(report_md.split())
                     chars_count = len(report_md)
 
                     st.markdown("#### Documentation Result")
                     m1, m2, m3 = st.columns(3)
                     with m1:
-                        st.metric("Sections", len(sections) if sections else "N/A")
+                        st.metric("View", "Reader")
                     with m2:
                         st.metric("Word Count", f"{words_count:,}")
                     with m3:
                         st.metric("Characters", f"{chars_count:,}")
 
-                    preview_tab, outline_tab, raw_tab = st.tabs([
-                        "📖 Reader View",
-                        "🧭 Section Navigator",
-                        "🧾 Raw Markdown",
-                    ])
-
-                    with preview_tab:
-                        st.markdown('<div class="doc-preview">', unsafe_allow_html=True)
-                        st.markdown(report_md)
-                        st.markdown("</div>", unsafe_allow_html=True)
-
-                    with outline_tab:
-                        if sections:
-                            table_data = [
-                                {"#": i + 1, "Section": title}
-                                for i, (title, _) in enumerate(sections)
-                            ]
-                            st.table(table_data)
-
-                            selected_title = st.selectbox(
-                                "Jump to a section preview",
-                                [title for title, _ in sections],
-                                help="Preview one section at a time for easier reading."
-                            )
-
-                            selected_content = next(
-                                (content for title, content in sections if title == selected_title),
-                                ""
-                            )
-                            st.markdown("---")
-                            st.markdown(selected_content)
-                        else:
-                            st.info("No section headings detected. Showing full report preview.")
-                            st.markdown(report_md)
-
-                    with raw_tab:
-                        st.text_area(
-                            "Generated Markdown",
-                            value=report_md,
-                            height=420,
-                            help="Copy, edit, or inspect raw markdown output."
-                        )
+                    st.markdown('<div class="doc-preview">', unsafe_allow_html=True)
+                    st.markdown(report_md)
+                    st.markdown("</div>", unsafe_allow_html=True)
 
                     # Prepare PDF bytes from markdown
                     try:
@@ -440,11 +371,6 @@ def show():
                             use_container_width=True,
                             disabled=pdf_bytes is None
                         )
-                    with col3:
-                        # Option to view prompt (for debugging)
-                        with st.expander("View Prompt"):
-                            st.code(prompt[:2000] + "..." if len(prompt) > 2000 else prompt)
-
                     progress_bar.empty()
                     status_text.empty()
                 else:
