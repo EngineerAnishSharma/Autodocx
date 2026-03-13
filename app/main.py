@@ -568,18 +568,6 @@ st.markdown(
 )
 
 
-# ── Main workflow ─────────────────────────────────────────────────────────────
-st.markdown(
-    '<p class="section-label" style="margin-top:0.5rem">✦ Get started</p>',
-    unsafe_allow_html=True,
-)
-
-
-from pages import _1_upload as upload_page
-
-upload_page.show()
-
-
 # ── Feature Cards ─────────────────────────────────────────────────────────────
 st.markdown(
     '<p class="section-label">✦ Why teams use AutoDocx</p>',
@@ -611,6 +599,18 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+# ── Main workflow ─────────────────────────────────────────────────────────────
+st.markdown(
+    '<p class="section-label" style="margin-top:0.5rem">✦ Get started</p>',
+    unsafe_allow_html=True,
+)
+
+
+from pages import _1_upload as upload_page
+
+upload_page.show()
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("<hr>", unsafe_allow_html=True)

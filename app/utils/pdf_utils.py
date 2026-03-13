@@ -203,7 +203,15 @@ class MarkdownPDF(FPDF):
         if subtitle:
             self.set_font("Helvetica", "", 12)
             self.set_text_color(196, 230, 210)
-            self.multi_cell(0, 7, _safe(subtitle), align="C")
+            safe_sub = _safe(subtitle)
+            try:
+                # Use multi_cell for nicer wrapping, but guard against rare
+                # fpdf width issues that raise "Not enough horizontal space".
+                self.multi_cell(0, 7, safe_sub, align="C")
+            except Exception:
+                # Extremely defensive fallback: one-line, truncated subtitle.
+                self.set_x(self.l_margin)
+                self.cell(0, 7, safe_sub[:80], align="C")
 
         # Body area: decorative box
         self.set_y(100)
