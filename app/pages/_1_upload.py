@@ -18,6 +18,50 @@ PAGE_TITLE = "📦 Upload Repository"
 
 _CSS = """
 <style>
+:root {
+    --text-fallback: #0f172a;
+    --muted-fallback: #475569;
+    --surface-fallback: #ffffff;
+    --surface-alt-fallback: #f8fafc;
+    --border-fallback: rgba(15, 23, 42, 0.14);
+}
+
+/* Keep labels and helper text readable even when global theme variables are unavailable. */
+[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] span,
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] span,
+label {
+    color: var(--text, var(--text-fallback)) !important;
+}
+
+/* Input contrast guard against white-on-white text/background combinations. */
+.stTextInput > div > div > input,
+.stTextArea > div > div > textarea,
+[data-testid="stNumberInput"] input,
+[data-testid="stFileUploaderDropzone"] {
+    background: var(--surface, var(--surface-fallback)) !important;
+    color: var(--text, var(--text-fallback)) !important;
+    border: 1px solid var(--border, var(--border-fallback)) !important;
+}
+
+.stTextInput > div > div > input::placeholder,
+.stTextArea > div > div > textarea::placeholder {
+    color: var(--muted2, var(--muted-fallback)) !important;
+    opacity: 0.85 !important;
+}
+
+[data-baseweb="popover"],
+[data-baseweb="popover"] ul,
+[role="listbox"] {
+    background: var(--surface, var(--surface-fallback)) !important;
+}
+
+[data-baseweb="popover"] *,
+[role="listbox"] * {
+    color: var(--text, var(--text-fallback)) !important;
+}
+
 /* ── Result section label ── */
 .result-header {
     font-family: 'Outfit', sans-serif;
@@ -43,10 +87,10 @@ _CSS = """
     font-family: 'Outfit', sans-serif;
     font-weight: 700;
     font-size: 1.05rem;
-    color: var(--muted2);
+    color: var(--muted2, var(--muted-fallback));
     margin-bottom: 0.35rem;
 }
-.empty-state .eh { font-size: 0.84rem; color: var(--muted); }
+.empty-state .eh { font-size: 0.84rem; color: var(--muted, var(--muted-fallback)); }
 </style>
 """
 

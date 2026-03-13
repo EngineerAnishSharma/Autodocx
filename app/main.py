@@ -345,7 +345,24 @@ st.markdown(
         border: 1.5px dashed var(--border) !important;
         border-radius: 12px !important;
     }
+    [data-testid="stFileUploaderDropzone"] button {
+        background: var(--surface2) !important;
+        color: var(--text) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 8px !important;
+    }
+    [data-testid="stFileUploaderDropzone"] button span,
+    [data-testid="stFileUploaderDropzone"] button p,
+    [data-testid="stFileUploaderDropzone"] small,
+    [data-testid="stFileUploaderDropzone"] [data-testid="stMarkdownContainer"] p {
+        color: var(--text) !important;
+    }
     [data-testid="stFileUploaderDropzone"]:hover {
+        border-color: var(--border-accent) !important;
+    }
+    [data-testid="stFileUploaderDropzone"] button:hover {
+        background: var(--surface3) !important;
+        color: var(--text) !important;
         border-color: var(--border-accent) !important;
     }
 
@@ -488,11 +505,41 @@ st.markdown(
         margin: 0 !important;
     }
     [data-testid="stExpander"] details > div {
-        background: var(--surface) !important;
+        background: #0b1220 !important;
+        color: #dbeafe !important;
         padding: 0.75rem 1rem 1rem !important;
     }
+    [data-testid="stExpanderDetails"],
+    [data-testid="stExpanderDetails"] > div,
+    [data-testid="stExpanderDetails"] [data-testid="stVerticalBlock"],
+    [data-testid="stExpanderDetails"] [data-testid="stVerticalBlock"] > div {
+        background: #0b1220 !important;
+        color: #dbeafe !important;
+    }
     [data-testid="stExpander"] details > div * {
-        color: var(--text) !important;
+        color: #dbeafe !important;
+    }
+    [data-testid="stExpander"] details > div pre,
+    [data-testid="stExpander"] details > div code,
+    [data-testid="stExpander"] details > div [class*="stCode"],
+    [data-testid="stExpander"] details > div [class*="code"] {
+        background: #0b1220 !important;
+        color: #dbeafe !important;
+    }
+
+    /* Keep file-tree/code text readable inside expander content. */
+    [data-testid="stExpander"] [data-testid="stCodeBlock"],
+    [data-testid="stExpander"] [data-testid="stCodeBlock"] > div,
+    [data-testid="stExpander"] [data-testid="stCodeBlock"] pre {
+        background: #0b1220 !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 10px !important;
+    }
+    [data-testid="stExpander"] [data-testid="stCodeBlock"] code,
+    [data-testid="stExpander"] [data-testid="stCodeBlock"] code *,
+    [data-testid="stExpander"] [data-testid="stCodeBlock"] span {
+        color: #dbeafe !important;
+        background: transparent !important;
     }
 
     /* ── CODE BLOCK dark fix ── */
