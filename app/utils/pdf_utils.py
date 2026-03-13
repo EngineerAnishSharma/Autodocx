@@ -133,6 +133,15 @@ _BODY = (30, 41, 59)  # body text (not pure black)
 # ── Section number extractor ──────────────────────────────────────────────────
 _SECTION_RE = re.compile(r"^(\d+)\.\s+(.+)$")
 
+# ── Diagram title keywords — any H3 whose text contains one of these
+# keywords (case-insensitive) is treated as a diagram caption heading.
+# It is stored pending and drawn on the diagram's own page.
+_DIAGRAM_TITLE_KEYWORDS = (
+    "use case", "interaction flow", "architecture layer", "entity relationship",
+    "er diagram", "sequence", "class diagram", "core interaction", "flow diagram",
+    "architecture layers",
+)
+
 
 # ── PDF class ─────────────────────────────────────────────────────────────────
 
@@ -146,6 +155,11 @@ class MarkdownPDF(FPDF):
         self.set_auto_page_break(auto=True, margin=20)
         self.set_margins(left=20, top=20, right=20)
         self._in_cover = False
+        self._started_sections = False
+        # When we see a diagram heading (H3) in markdown, we don't render it
+        # immediately. Instead we remember it here and let the diagram renderer
+        # place the title on the same page as the figure.
+        self._pending_diagram_title: Optional[str] = None
 
     # ── Header / Footer ───────────────────────────────────────────────────────
 
@@ -205,11 +219,8 @@ class MarkdownPDF(FPDF):
             self.set_text_color(196, 230, 210)
             safe_sub = _safe(subtitle)
             try:
-                # Use multi_cell for nicer wrapping, but guard against rare
-                # fpdf width issues that raise "Not enough horizontal space".
                 self.multi_cell(0, 7, safe_sub, align="C")
             except Exception:
-                # Extremely defensive fallback: one-line, truncated subtitle.
                 self.set_x(self.l_margin)
                 self.cell(0, 7, safe_sub[:80], align="C")
 
@@ -284,7 +295,11 @@ class MarkdownPDF(FPDF):
 
     def _h2(self, title: str):
         """H2: accent-bordered section heading with optional number badge."""
-        self._check_page_break(20)
+        is_numbered = bool(_SECTION_RE.match(title))
+        if is_numbered and self.get_y() > self.t_margin + 10:
+            self.add_page()
+        else:
+            self._check_page_break(25)
         self.ln(5)
 
         # Green left accent bar (3 px wide)
@@ -304,7 +319,6 @@ class MarkdownPDF(FPDF):
         sm = _SECTION_RE.match(title)
         if sm:
             num, rest = sm.group(1), sm.group(2)
-            # badge
             badge_w = 7
             self.set_fill_color(*_NAVY)
             self.rect(text_x, bar_y, badge_w, bar_h, "F")
@@ -312,7 +326,6 @@ class MarkdownPDF(FPDF):
             self.set_font("Helvetica", "B", 9)
             self.set_text_color(255, 255, 255)
             self.cell(badge_w, bar_h, _safe(num), align="C")
-            # heading text
             self.set_fill_color(*_LIGHT_BLUE)
             self.set_font("Helvetica", "B", 12)
             self.set_text_color(*_NAVY)
@@ -334,18 +347,22 @@ class MarkdownPDF(FPDF):
         self._reset()
 
     def _h3(self, title: str):
-        """H3: underlined with accent colour."""
+        """H3: small band with subtle background to stand out from body text."""
         self._check_page_break(14)
         self.ln(3)
-        self.set_font("Helvetica", "B", 11)
-        self.set_text_color(*_NAVY)
-        self.multi_cell(0, 6.5, _safe(_soft_wrap(title)))
         y = self.get_y()
-        self.set_draw_color(*_ACCENT)
-        self.set_line_width(0.5)
-        self.line(self.l_margin, y, self.l_margin + 60, y)
-        self.set_line_width(0.2)
-        self.ln(3)
+        band_h = 7
+        self.set_fill_color(246, 248, 252)
+        self.rect(self.l_margin, y, self.w - self.l_margin - self.r_margin, band_h, "F")
+        self.set_xy(self.l_margin + 1.5, y + 1)
+        self.set_font("Helvetica", "B", 10.5)
+        self.set_text_color(*_NAVY)
+        self.multi_cell(
+            0,
+            5,
+            _safe(_soft_wrap(title)),
+        )
+        self.ln(2)
         self._reset()
 
     def _h4(self, title: str):
@@ -377,23 +394,18 @@ class MarkdownPDF(FPDF):
         line_h = 5.5
         padding = 4
 
-        # Measure total height
         total_h = padding + line_h * len(lines_text) + padding
 
-        # Draw tinted background
         self.set_fill_color(*_BQ_BG)
         self.rect(card_x, card_y, card_w, total_h, "F")
 
-        # Draw left bar
         self.set_fill_color(*_BQ_BAR)
         self.rect(card_x, card_y, 3, total_h, "F")
 
-        # Draw border
         self.set_draw_color(*_ACCENT)
         self.set_line_width(0.3)
         self.rect(card_x, card_y, card_w, total_h, "D")
 
-        # Write lines
         self.set_xy(card_x + 6, card_y + padding)
         self.set_font("Helvetica", "", 9)
         self.set_text_color(*_BODY)
@@ -417,10 +429,8 @@ class MarkdownPDF(FPDF):
         self._check_page_break(12)
         self.ln(3)
 
-        # Calculate column widths — give more room to longer columns
         usable_w = self.w - self.l_margin - self.r_margin
 
-        # Estimate content width per column from headers + first 5 rows
         sample = [headers] + rows[:5]
         col_lens = [0] * col_count
         for r in sample:
@@ -429,14 +439,12 @@ class MarkdownPDF(FPDF):
                     col_lens[i] = max(col_lens[i], len(_safe(cell)))
         total_len = sum(col_lens) or 1
         col_widths = [max(14, (cl / total_len) * usable_w) for cl in col_lens]
-        # Normalise so they sum to usable_w
         scale = usable_w / sum(col_widths)
         col_widths = [cw * scale for cw in col_widths]
 
         line_h = 6.5
         head_h = 7.5
 
-        # Header row
         self.set_fill_color(*_TABLE_HEAD)
         self.set_text_color(255, 255, 255)
         self.set_font("Helvetica", "B", 9)
@@ -447,7 +455,6 @@ class MarkdownPDF(FPDF):
             self.cell(col_widths[i], head_h, hdr, border=1, fill=True, align="C")
         self.ln(head_h)
 
-        # Data rows
         self.set_font("Helvetica", size=8.5)
         for row_idx, row in enumerate(rows):
             fill_color = _TABLE_ALT if row_idx % 2 == 0 else _TABLE_EVEN
@@ -455,11 +462,9 @@ class MarkdownPDF(FPDF):
             self.set_text_color(*_BODY)
             row_y = self.get_y()
 
-            # Estimate row height (multi_cell wrapping)
             row_h = line_h
             for i in range(col_count):
                 cell_val = _safe(row[i]) if i < len(row) else ""
-                # fpdf2 char width approximation: ~2.0 mm per char at size 8.5
                 chars_per_line = max(1, int(col_widths[i] / 2.0))
                 lines_needed = max(1, len(cell_val) // chars_per_line + 1)
                 row_h = max(row_h, lines_needed * line_h)
@@ -480,7 +485,6 @@ class MarkdownPDF(FPDF):
                     align="L",
                     max_line_height=line_h,
                 )
-                # Reset y to row_y after each multi_cell so columns stay aligned
                 self.set_y(row_y)
 
             self.ln(row_h)
@@ -498,131 +502,234 @@ class MarkdownPDF(FPDF):
         if not lines_in:
             return
 
-        self._check_page_break(12)
-        self.ln(3)
-
-        # Language label
-        if lang and lang not in ("", "text", "plain"):
-            self.set_font("Helvetica", "B", 7.5)
-            self.set_text_color(*_ACCENT_DARK)
-            self.cell(0, 5, lang.upper(), align="L")
-            self.ln(5)
-
-        # Background rect — compute height first
-        line_h = 4.5
-        # Estimate: render then measure
-        code_x = self.l_margin
-        code_w = self.w - self.l_margin - self.r_margin
-        block_start_y = self.get_y()
-
-        # Left accent bar
-        self.set_fill_color(*_CODE_BG)
-        # We'll draw the rect after we know the height; for now just track y
-
-        self.set_font("Courier", size=8)
-        self.set_text_color(50, 50, 80)
-
-        text_x = code_x + 5  # indent inside the block
-        self.set_x(text_x)
-
+        # ── Pre-process: wrap long lines ──────────────────────────────────
         rendered_lines = []
         for raw_line in lines_in:
             safe_line = _safe(raw_line.rstrip())
-            # hard-wrap very long lines at 90 chars
             while len(safe_line) > 90:
                 rendered_lines.append(safe_line[:90])
                 safe_line = "  " + safe_line[90:]
             rendered_lines.append(safe_line)
 
-        # Compute block height
-        block_h = len(rendered_lines) * line_h + 6  # 3px padding top + bottom
+        line_h = 4.5
+        code_x = self.l_margin
+        code_w = self.w - self.l_margin - self.r_margin
+        text_x = code_x + 5
 
-        # Draw background
-        self.set_fill_color(*_CODE_BG)
-        self.rect(code_x, block_start_y, code_w, block_h, "F")
+        # ── How much space is available on one page (body area) ───────────
+        page_body_h = self.h - self.t_margin - self.b_margin
+        # Height of one full "chunk" of code lines (fits in remaining page)
 
-        # Draw left accent bar
-        self.set_fill_color(*_ACCENT)
-        self.rect(code_x, block_start_y, 2.5, block_h, "F")
+        # Language pill height
+        pill_h_total = 0
+        if lang and lang not in ("", "text", "plain"):
+            pill_h_total = 4.5 + 1.5  # pill + gap
 
-        # Draw border
-        self.set_draw_color(*_CODE_BORDER)
-        self.set_line_width(0.3)
-        self.rect(code_x, block_start_y, code_w, block_h, "D")
+        # Chunk lines into page-sized groups so we never pre-draw a rect
+        # that is taller than the remaining page — avoiding blank pages.
+        # We render chunk by chunk, starting a new page when needed.
+        first_chunk = True
+        i = 0
+        while i < len(rendered_lines):
+            # How much vertical space is left on this page?
+            avail = self.h - self.b_margin - self.get_y() - 6  # 6px bottom pad
 
-        # Write lines
-        self.set_y(block_start_y + 3)
-        self.set_font("Courier", size=8)
-        self.set_text_color(50, 50, 80)
-        for line in rendered_lines:
-            self._check_page_break(line_h + 2)
-            self.set_x(text_x)
-            self.cell(code_w - 6, line_h, line)
-            self.ln(line_h)
+            # First chunk also needs room for the lang pill
+            extra = pill_h_total if first_chunk else 0
 
-        self.set_y(block_start_y + block_h)
+            # How many lines fit?
+            usable = avail - extra - 6  # 6px = top+bottom padding inside block
+            lines_this_chunk = max(1, int(usable / line_h))
+
+            # If fewer than 3 lines fit and it's not the last batch, start new page
+            if lines_this_chunk < 3 and i < len(rendered_lines) - 1:
+                self.add_page()
+                avail = self.h - self.b_margin - self.get_y() - 6
+                extra = pill_h_total if first_chunk else 0
+                usable = avail - extra - 6
+                lines_this_chunk = max(1, int(usable / line_h))
+
+            chunk = rendered_lines[i : i + lines_this_chunk]
+            i += lines_this_chunk
+
+            self.ln(3)
+
+            # Draw lang pill on very first chunk only
+            if first_chunk and lang and lang not in ("", "text", "plain"):
+                pill_text = lang.upper()
+                self.set_font("Helvetica", "B", 7)
+                text_w = self.get_string_width(pill_text) + 4
+                x = self.l_margin
+                y = self.get_y()
+                self.set_fill_color(*_ACCENT)
+                self.set_text_color(255, 255, 255)
+                self.rect(x, y, text_w, 4.5, "F")
+                self.set_xy(x, y + 0.7)
+                self.cell(text_w, 3.1, pill_text, align="C")
+                self.ln(4.5 + 1.5)
+                first_chunk = False
+
+            # Draw background + borders for this chunk
+            block_start_y = self.get_y()
+            block_h = len(chunk) * line_h + 6
+
+            self.set_fill_color(*_CODE_BG)
+            self.rect(code_x, block_start_y, code_w, block_h, "F")
+            self.set_fill_color(*_ACCENT)
+            self.rect(code_x, block_start_y, 2.5, block_h, "F")
+            self.set_draw_color(*_CODE_BORDER)
+            self.set_line_width(0.3)
+            self.rect(code_x, block_start_y, code_w, block_h, "D")
+
+            # Write lines
+            self.set_y(block_start_y + 3)
+            self.set_font("Courier", size=8)
+            self.set_text_color(50, 50, 80)
+            for line in chunk:
+                self.set_x(text_x)
+                self.cell(code_w - 6, line_h, line)
+                self.ln(line_h)
+
+            self.set_y(block_start_y + block_h)
+            first_chunk = False
+
         self.ln(4)
         self._reset()
 
     def _render_mermaid(self, lines_in: List[str]):
-        """Render a Mermaid diagram via Kroki API with constrained sizing."""
-        self._check_page_break(60)
-        self.ln(3)
+        """Render a Mermaid diagram on its own dedicated page.
 
-        diagram_text = "\n".join(lines_in)
+        Fixed layout (all coordinates absolute, no fpdf cursor involvement):
+          - 5%  of page height  = top gap
+          - 10% of page height  = title band
+          - 80% of page height  = image box  (image ALWAYS fills this exactly)
+          - 5%  of page height  = bottom gap
+
+        auto_page_break is disabled for the whole page so fpdf can never
+        inject a second page regardless of image dimensions.
+        """
+        import struct
+
+        # ── 1. New page, kill auto-break immediately ──────────────────────
+        self.add_page()
+        self.set_auto_page_break(False)
+
+        # ── 2. Grab & clear pending title ────────────────────────────────
+        title_to_draw = self._pending_diagram_title or ""
+        self._pending_diagram_title = None
+
+        # ── 3. Fixed-layout geometry (all in mm, absolute) ────────────────
+        #
+        #   page height  = self.h   (e.g. 297 mm for A4)
+        #   usable zone  = full page (header/footer drawn independently)
+        #   We carve the full page height into four fixed bands:
+        #
+        ph = self.h                          # full page height in mm
+        gap_top    = ph * 0.05               # 5%
+        title_h    = ph * 0.10               # 10%
+        img_h      = ph * 0.80               # 80%
+        # gap_bot  = ph * 0.05               # 5% (implicit — nothing drawn there)
+
+        y_title = gap_top                    # title band starts here
+        y_img   = y_title + title_h          # image box starts here
+
         avail_w = self.w - self.l_margin - self.r_margin
-        # Constrain diagram width: max 130mm, centered
-        display_w = min(130, avail_w * 0.80)
-        x_offset = self.l_margin + (avail_w - display_w) / 2
+        img_x   = self.l_margin             # image left edge (centered below)
 
-        rendered = False
+        # ── 4. Draw title band ────────────────────────────────────────────
+        if title_to_draw:
+            self.set_fill_color(246, 248, 252)
+            self.rect(self.l_margin, y_title, avail_w, title_h, "F")
+            # Green left accent stripe
+            self.set_fill_color(*_ACCENT)
+            self.rect(self.l_margin, y_title, 3, title_h, "F")
+            # Title text — vertically centred in the band
+            self.set_font("Helvetica", "B", 14)
+            self.set_text_color(*_NAVY)
+            text_y = y_title + (title_h - 6) / 2   # 6 ≈ font cap height in mm
+            self.set_xy(self.l_margin + 8, text_y)
+            self.cell(avail_w - 8, 6, _safe(_soft_wrap(title_to_draw)), align="L")
+        else:
+            # No title — draw a thin accent line as a divider
+            self.set_fill_color(*_ACCENT)
+            self.rect(self.l_margin, y_title + title_h - 1, avail_w, 1, "F")
+
+        # ── 5. Fetch diagram PNG from Kroki ───────────────────────────────
+        diagram_text = "\n".join(lines_in)
+        img_data: Optional[bytes] = None
         try:
-            data = diagram_text.encode("utf-8")
+            data       = diagram_text.encode("utf-8")
             compressed = zlib.compress(data, 9)
-            encoded = base64.urlsafe_b64encode(compressed).decode("ascii")
-            url = f"https://kroki.io/mermaid/png/{encoded}"
-            req = urllib.request.Request(url, headers={"User-Agent": "AutoDocx/1.0"})
-            res = urllib.request.urlopen(req, timeout=12)
-            img_data = res.read()
-
-            img_start_y = self.get_y()
-            self.image(io.BytesIO(img_data), x=x_offset, w=display_w)
-            rendered = True
-
-            # Caption below diagram
-            self.ln(2)
-            self.set_font("Helvetica", "I", 8)
-            self.set_text_color(*_SUBTEXT)
-            self.cell(0, 5, "Figure: System Diagram (rendered via Mermaid)", align="C")
-            self.ln(5)
-
+            encoded    = base64.urlsafe_b64encode(compressed).decode("ascii")
+            url        = f"https://kroki.io/mermaid/png/{encoded}"
+            req        = urllib.request.Request(url, headers={"User-Agent": "AutoDocx/1.0"})
+            res        = urllib.request.urlopen(req, timeout=12)
+            img_data   = res.read()
         except Exception as e:
             print(f"MERMAID RENDER ERROR: {e}")
 
-        if not rendered:
-            # Fallback: tinted box with source code
+        # ── 6. Place image — ALWAYS exactly fills the 80% box ────────────
+        if img_data:
+            # Centre horizontally while filling the full img_h vertically.
+            # We pass BOTH w and h explicitly so fpdf scales to fit the box
+            # exactly — no auto-sizing, no overflow, no page injection.
+            #
+            # We keep aspect ratio by fitting inside the box (letterbox):
+            img_w_px = img_h_px = None
+            try:
+                if len(img_data) >= 24 and img_data[:8] == b'\x89PNG\r\n\x1a\n':
+                    img_w_px = struct.unpack('>I', img_data[16:20])[0]
+                    img_h_px = struct.unpack('>I', img_data[20:24])[0]
+            except Exception:
+                pass
+
+            if img_w_px and img_h_px and img_w_px > 0 and img_h_px > 0:
+                aspect = img_h_px / img_w_px          # h/w ratio
+                # Fit inside avail_w × img_h, maintaining aspect
+                fit_w = avail_w
+                fit_h = fit_w * aspect
+                if fit_h > img_h:
+                    fit_h = img_h
+                    fit_w = fit_h / aspect
+                # Hard-clamp: never exceed the box in either dimension
+                fit_w = min(fit_w, avail_w)
+                fit_h = min(fit_h, img_h)
+            else:
+                # Unknown dimensions — fill the box completely
+                fit_w = avail_w
+                fit_h = img_h
+
+            # Centre horizontally inside the image box
+            x_img = self.l_margin + (avail_w - fit_w) / 2
+            # Centre vertically inside the 80% band
+            y_img_placed = y_img + (img_h - fit_h) / 2
+
+            # Place with EXPLICIT x, y, w, h — fpdf will never move the
+            # page cursor past the page boundary because auto-break is off.
+            self.image(
+                io.BytesIO(img_data),
+                x=x_img,
+                y=y_img_placed,
+                w=fit_w,
+                h=fit_h,
+            )
+
+        else:
+            # ── Fallback: tinted box with "not rendered" message ──────────
             self.set_fill_color(*_MERMAID_BG)
             self.set_draw_color(*_ACCENT)
             self.set_line_width(0.4)
-            box_h = min(len(lines_in) * 4.5 + 14, 60)
-            self.rect(self.l_margin, self.get_y(), avail_w, box_h, "FD")
-            self.ln(4)
-            self.set_font("Helvetica", "I", 9)
+            self.rect(self.l_margin, y_img, avail_w, img_h, "FD")
+            msg_y = y_img + img_h / 2 - 4
+            self.set_font("Helvetica", "I", 10)
             self.set_text_color(*_NAVY)
-            self.cell(0, 6, "[ Diagram — open the Markdown file to view ]", align="C")
-            self.ln(8)
-            # Show source in a compact code-like listing
-            self.set_font("Courier", size=7.5)
-            self.set_text_color(*_SUBTEXT)
-            for line in lines_in[:20]:
-                self.set_x(self.l_margin + 4)
-                self.cell(avail_w - 8, 4, _safe(line[:100]))
-                self.ln(4)
-            if len(lines_in) > 20:
-                self.set_x(self.l_margin + 4)
-                self.cell(avail_w - 8, 4, f"... ({len(lines_in)-20} more lines)")
-                self.ln(4)
+            self.set_xy(self.l_margin, msg_y)
+            self.cell(avail_w, 8,
+                      "[Mermaid diagram — view in Markdown report]",
+                      align="C")
 
+        # ── 7. Restore auto page break for all subsequent content ─────────
+        self.set_auto_page_break(auto=True, margin=20)
         self._reset()
 
     # ── Main markdown renderer ────────────────────────────────────────────────
@@ -700,6 +807,35 @@ class MarkdownPDF(FPDF):
                 try:
                     level = len(hm.group(1))
                     title = _strip_md(hm.group(2))
+
+                    # Special handling: if this H3 heading is immediately
+                    # followed (within the next few lines) by a mermaid code
+                    # fence, store it as pending so _render_mermaid can draw
+                    # it on the diagram's own page.  We use a lookahead rather
+                    # than a hardcoded name list so any diagram title works.
+                    if level == 3:
+                        title_lower = title.lower()
+                        is_diagram_title = any(
+                            kw in title_lower for kw in _DIAGRAM_TITLE_KEYWORDS
+                        )
+                        if not is_diagram_title:
+                            # Also check: is the next non-blank line a mermaid fence?
+                            peek = idx + 1
+                            while peek < len(lines) and not lines[peek].strip():
+                                peek += 1
+                            if (
+                                peek < len(lines)
+                                and lines[peek].strip().startswith("```mermaid")
+                            ):
+                                is_diagram_title = True
+                        if is_diagram_title:
+                            # Remember this as the caption for the upcoming diagram
+                            # page, but still render the heading here so the section
+                            # page is not visually empty when only diagrams follow.
+                            self._pending_diagram_title = title
+
+                    if level == 2 and _SECTION_RE.match(title):
+                        self.add_page()
                     if level == 1:
                         self._h1(title)
                     elif level == 2:
@@ -752,10 +888,9 @@ class MarkdownPDF(FPDF):
                     indent = min(len(ul.group(1)), 16)
                     item = ul.group(2)
                     self.set_x(self.l_margin + indent + 2)
-                    # Green bullet dot
                     self.set_font("Helvetica", "B", 14)
                     self.set_text_color(*_ACCENT)
-                    self.cell(4, 5.5, "\x95" if False else "-")  # bullet char
+                    self.cell(4, 5.5, "\x95" if False else "-")
                     self.set_font("Helvetica", size=10.5)
                     self.set_text_color(*_BODY)
                     self._write_inline(item, 5.5)
@@ -844,13 +979,10 @@ def markdown_to_pdf_bytes(markdown_text: str, title: Optional[str] = None) -> by
         pdf.report_title = _safe(display_title)[:80]
         pdf.set_title(display_title)
 
-        # Cover page
-        pdf.make_cover(display_title, subtitle, generated_at)
-
-        # Strip the metadata blockquote from the markdown before rendering
-        # (it's already shown on the cover) — keep it if you prefer to show both
-        # md_clean = re.sub(r"(^|\n)(> .+\n?)+", "\n", markdown_text)
-        # For now render as-is (the info card style will make it look nice)
+        # Start directly with the documentation content — no separate cover
+        # sheet. The metadata card at the top of the markdown serves as the
+        # visual header, so we just add a normal page and render the markdown.
+        pdf.add_page()
         pdf.add_markdown(markdown_text)
 
         return _to_bytes(pdf.output())

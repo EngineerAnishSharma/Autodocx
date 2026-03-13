@@ -10,6 +10,7 @@ Improvements over v1:
 - Gemini diagrams injected into Section 2, not appended at the end
 - Folder structure sent as full tree string to prevent truncation
 - Generation metadata (timestamp, model, repo) added to output header
+- Section 2 always has prose content before diagrams (never blank page)
 """
 
 from pathlib import Path
@@ -144,6 +145,16 @@ def load_folder_tree(repo_path: Path, max_lines: int = 120) -> str:
         ".mvn",
         "venv",
         ".venv",
+        # Asset / screenshot folders are omitted entirely to keep the tree tight.
+        "img",
+        "image",
+        "images",
+        "assets",
+        "static",
+        "media",
+        "screen",
+        "screens",
+        "screenshots",
     }
 
     lines: List[str] = [str(repo_path.name) + "/"]
@@ -161,7 +172,9 @@ def load_folder_tree(repo_path: Path, max_lines: int = 120) -> str:
         entries = [e for e in entries if e.name not in SKIP]
         for i, entry in enumerate(entries):
             if len(lines) >= max_lines:
-                lines.append(f"{prefix}    ... (truncated)")
+                lines.append(
+                    f"{prefix}    ... (tree truncated for brevity — see repository for full structure)"
+                )
                 return
             connector = "└── " if i == len(entries) - 1 else "├── "
             lines.append(
@@ -263,7 +276,7 @@ _SECTION_PATTERNS = {
         re.IGNORECASE | re.MULTILINE,
     ),
     5: re.compile(
-        r"^#{1,3}\s+(?:\d+[.)]\s+)?(?:System Design|Architecture Design|Design Overview)",
+        r"^#{1,3}\s+(?:\d+[.)]\s+)?(?:System Design|Architecture Design|Design Overview|Technical Design|Application Design|Design Details)",
         re.IGNORECASE | re.MULTILINE,
     ),
     6: re.compile(
@@ -342,17 +355,28 @@ def _assemble_report(
         "",
     ]
 
-    for num in range(1, 14):
-        title = _SECTION_TITLES[num]
-        body = sections.get(num, "")
-        lines.append(f"## {num}. {title}")
+    for canonical_num in range(1, 14):
+        # Use the canonical section numbers 1–13 directly so the report
+        # always shows the full list of points, including a dedicated
+        # Non-Functional Requirements section and a References section.
+        display_num = canonical_num
+        title = _SECTION_TITLES.get(canonical_num, f"Section {canonical_num}")
+        body = sections.get(canonical_num, "")
+        lines.append(f"## {display_num}. {title}")
         lines.append("")
         if body:
             lines.append(body)
         else:
-            lines.append(
-                f"*Section {num} ({title}) — information not available for this repository.*"
-            )
+            # Friendly, styled fallbacks that render as info cards in the PDF.
+            if canonical_num == 5:
+                lines.append(
+                    "> **Info:** System design details could not be confidently inferred from this repository. "
+                    "Review the architecture and code structure sections for implementation insights."
+                )
+            else:
+                lines.append(
+                    f"> **Info:** Section {display_num} ({title}) — information not available for this repository."
+                )
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -363,31 +387,123 @@ def _assemble_report(
 # ── Diagram generation ────────────────────────────────────────────────────────
 
 
+def _infer_actors(files_ctx: str, readme_ctx: str) -> List[str]:
+    """
+    Infer likely actors from repository context instead of hard-coding User/Admin.
+    Returns a short list of canonical actor labels.
+    """
+    actors: List[str] = []
+    combined = (files_ctx + readme_ctx).lower()
+
+    candidate_actors = {
+        "User": ["user", "member", "customer", "client", "subscriber"],
+        "Admin": ["admin", "administrator", "superuser", "manager"],
+        "Guest": ["guest", "visitor", "anonymous", "public"],
+        "Operator": ["operator", "staff", "agent", "moderator"],
+        "System": ["cron", "scheduler", "daemon", "worker", "job"],
+        "API Client": ["api", "webhook", "external", "third-party", "oauth"],
+    }
+
+    for actor, keywords in candidate_actors.items():
+        if any(kw in combined for kw in keywords):
+            actors.append(actor)
+
+    if not actors:
+        return ["Client", "System"]
+    return actors[:3]
+
+
+def _select_diagram_types(
+    files_ctx: str, readme_ctx: str, deps_ctx: str
+) -> List[Dict[str, str]]:
+    """
+    Return three fixed diagram specs used for all repositories. Their _type_
+    and high-level intent are stable so the PDF layout is predictable; the
+    actual nodes/labels still depend on repo context.
+    """
+    return [
+        {
+            "title": "Architecture Layers",
+            "description": "Show the high-level architecture layers (UI, Logic, Data) and their connections.",
+            "mermaid_type": "flowchart TD",
+            "style": "layers",
+        },
+        {
+            "title": "Core Interaction Flow",
+            "description": "Show the sequence of a core interaction through the system (e.g., Request -> Response).",
+            "mermaid_type": "sequenceDiagram",
+            "style": "sequence",
+        },
+        {
+            "title": "Use Case Diagram",
+            "description": "Show key actors and the main functional actions they perform.",
+            "mermaid_type": "flowchart LR",
+            "style": "use_case",
+        },
+        {
+            "title": "Entity Relationship Diagram",
+            "description": "Show the main data entities, attributes, and relationships.",
+            "mermaid_type": "erDiagram",
+            "style": "er",
+        },
+    ]
+
+
 def generate_gemini_diagrams(readme_ctx: str, files_ctx: str, deps_ctx: str) -> str:
-    """Use Gemini to generate high-quality Mermaid diagrams."""
+    """
+    Generate up to 3 context-aware Mermaid diagrams using Gemini.
+    Diagram types are chosen based on what the repo actually contains.
+    Returns a markdown string with labelled mermaid blocks.
+    """
     if not os.getenv("GEMINI_API_KEY"):
         return ""
+
+    actors = _infer_actors(files_ctx, readme_ctx)
+    diagram_specs = _select_diagram_types(files_ctx, readme_ctx, deps_ctx)
+    actors_str = ", ".join(actors)
+
+    diagram_instructions = []
+    for i, spec in enumerate(diagram_specs, 1):
+        diagram_instructions.append(
+            f"DIAGRAM {i}: \"{spec['title']}\"\n"
+            f"  - Type: `{spec['mermaid_type']}`\n"
+            f"  - Goal: {spec['description']}\n"
+            f"  - Inferred actors/participants (use ONLY if relevant): {actors_str}\n"
+            f"  - Max nodes/steps: 10\n"
+        )
+
+    diagrams_block = "\n".join(diagram_instructions)
+
+    prompt = (
+        "You are an expert software architect. Analyze the project context below and "
+        "generate exactly 4 high-quality Mermaid diagrams.\n\n"
+        "DIAGRAM SPECIFICATIONS:\n"
+        f"{diagrams_block}\n"
+        "STRICT RULES:\n"
+        "1. Output ONLY the 4 mermaid code blocks with their labels. No prose, no explanation.\n"
+        "2. Before each ```mermaid block, write the label line exactly like: ### <diagram title>\n"
+        "3. Use ONLY actors/entities that are ACTUALLY present in the codebase below.\n"
+        "4. No parentheses inside flowchart node labels — use square brackets [ ].\n"
+        "5. Keep labels short: max 4 words per node.\n"
+        "6. For sequenceDiagram: max 8 messages.\n"
+        "7. For flowchart: max 12 nodes.\n"
+        "8. Every diagram must render valid Mermaid syntax.\n\n"
+        "EXPECTED OUTPUT FORMAT (follow exactly):\n"
+        "### <diagram title>\n```mermaid\n...\n```\n(repeated 4 times)\n\n"
+        f"PROJECT CONTEXT:\nREADME:\n{readme_ctx[:2000]}\n\n"
+        f"FILES SUMMARY:\n{files_ctx[:2500]}\n\n"
+        f"DEPENDENCIES:\n{deps_ctx[:1000]}\n"
+    )
+
     try:
         try:
             model = genai.GenerativeModel("gemini-2.5-flash")
         except Exception:
             model = genai.GenerativeModel("gemini-1.5-flash")
-    except Exception as e:
-        logger.warning(f"Could not initialize Gemini: {e}")
-        return ""
-
-    prompt = (
-        "You are an expert software architect. Analyze the project context and generate TWO Mermaid diagrams.\n"
-        "1. A 'Use Case Diagram' using `flowchart LR`. Show actors (User, Admin) on the left and system actions on the right. Max 10 nodes. No parentheses in node labels.\n"
-        "2. A 'Core System Flow' using `sequenceDiagram`. Max 6 steps.\n"
-        "Rules:\n"
-        "- Output ONLY the two ```mermaid blocks. No other text whatsoever.\n"
-        "- No parentheses inside flowchart node labels — use square brackets only.\n"
-        "- Keep labels short (max 5 words).\n\n"
-        f"README:\n{readme_ctx[:2000]}\n\nFILES:\n{files_ctx[:2000]}\n\nDEPS:\n{deps_ctx[:1000]}"
-    )
-    try:
-        response = model.generate_content(prompt)
+        response = model.generate_content(
+            prompt,
+            generation_config={"temperature": 0.05},
+        )
         text = response.text.strip()
         if "```mermaid" in text:
             return text
@@ -400,18 +516,140 @@ def generate_gemini_diagrams(readme_ctx: str, files_ctx: str, deps_ctx: str) -> 
 def _ollama_use_case_diagram(
     client, model: str, temperature: float, readme_ctx: str, files_ctx: str
 ) -> str:
-    """Fallback: ask Ollama for a use case diagram when Gemini is not available."""
-    prompt = (
-        "Generate a Mermaid use case diagram for this project using `flowchart LR`.\n"
-        "Rules:\n"
-        "- Use actors: User, Admin\n"
-        "- Show 6-8 system actions as rectangular nodes\n"
-        "- No parentheses in node labels — use only square brackets\n"
-        "- Output ONLY the ```mermaid code block. Nothing else.\n\n"
-        f"README:\n{readme_ctx[:1500]}\nFILES:\n{files_ctx[:1500]}"
+    """
+    Fallback: generate up to 3 context-aware Mermaid diagrams via Ollama when
+    Gemini is not available.
+    """
+    actors = _infer_actors(files_ctx, readme_ctx)
+    diagram_specs = _select_diagram_types(files_ctx, readme_ctx, "")
+    actors_str = ", ".join(actors)
+
+    specs_text = "\n".join(
+        [
+            f"Diagram {i}: \"{s['title']}\" — {s['description']} — Use `{s['mermaid_type']}`"
+            for i, s in enumerate(diagram_specs, 1)
+        ]
     )
-    system = "You are an expert software architect. Return ONLY a Mermaid code block. No prose."
-    return _chat_completion(client, model, system, prompt, temperature, max_tokens=600)
+
+    prompt = (
+        "Generate 4 Mermaid diagrams for this project.\n\n"
+        "Diagrams needed:\n"
+        f"{specs_text}\n\n"
+        f"Inferred actors (use only what is actually present): {actors_str}\n\n"
+        "Rules:\n"
+        "- Label each diagram with ### <title> before its code block.\n"
+        "- No parentheses in flowchart labels — square brackets only.\n"
+        "- Max 10 nodes per diagram.\n"
+        "- Output ONLY the 4 labelled mermaid blocks. Nothing else.\n\n"
+        f"README:\n{readme_ctx[:1200]}\n\n"
+        f"FILES:\n{files_ctx[:1200]}\n"
+    )
+    system = (
+        "You are a software architect. Output ONLY labelled Mermaid code blocks. No prose."
+    )
+    # Use a very low temperature here to keep diagrams stable across runs.
+    return _chat_completion(client, model, system, prompt, temperature=0.05, max_tokens=1200)
+
+
+# ── Section 2 prose fallback ──────────────────────────────────────────────────
+
+def _sec2_prose_fallback(files_ctx: str, deps_ctx: str, readme_ctx: str) -> str:
+    """
+    Build a minimal but meaningful Section 2 prose body when the LLM either
+    produced nothing or the content was fully stripped during post-processing.
+
+    This guarantees the PDF never shows a blank page between the
+    '2. System Architecture' heading and the first diagram page.
+    """
+    # Try to detect the rough tech stack from deps/files context for a
+    # slightly personalised fallback rather than pure boilerplate.
+    combined = (files_ctx + deps_ctx + readme_ctx).lower()
+
+    frontend = []
+    backend = []
+    database = []
+
+    if "react" in combined:
+        frontend.append("React")
+    if "vue" in combined:
+        frontend.append("Vue.js")
+    if "angular" in combined:
+        frontend.append("Angular")
+    if "html" in combined or "css" in combined:
+        frontend.append("HTML / CSS")
+    if "bootstrap" in combined:
+        frontend.append("Bootstrap")
+
+    if "spring" in combined:
+        backend.append("Spring / Spring Boot")
+    if "django" in combined or "flask" in combined or "fastapi" in combined:
+        backend.append("Python web framework")
+    if "express" in combined or "node" in combined:
+        backend.append("Node.js / Express")
+    if "java" in combined and "spring" not in combined:
+        backend.append("Java (Servlets / JSP)")
+    if "servlet" in combined:
+        backend.append("Java Servlets")
+    if "jsp" in combined:
+        backend.append("JSP")
+
+    if "mysql" in combined:
+        database.append("MySQL")
+    if "postgresql" in combined or "postgres" in combined:
+        database.append("PostgreSQL")
+    if "mongodb" in combined:
+        database.append("MongoDB")
+    if "sqlserver" in combined or "mssql" in combined or "sqljdbc" in combined:
+        database.append("SQL Server")
+    if "sqlite" in combined:
+        database.append("SQLite")
+
+    lines = [
+        "### High-Level Architecture",
+        "",
+        "The system follows a layered architecture separating presentation, "
+        "business logic, and data access concerns. Each layer communicates "
+        "through well-defined interfaces to promote maintainability and testability.",
+        "",
+        "### Components",
+        "",
+    ]
+
+    if frontend:
+        lines.append(f"- **Presentation Layer:** {', '.join(frontend)}")
+    else:
+        lines.append("- **Presentation Layer:** User interface components")
+
+    if backend:
+        lines.append(f"- **Business Logic Layer:** {', '.join(backend)}")
+    else:
+        lines.append("- **Business Logic Layer:** Application controllers and services")
+
+    if database:
+        lines.append(f"- **Data Access Layer:** {', '.join(database)}")
+    else:
+        lines.append("- **Data Access Layer:** Persistent data storage")
+
+    lines += [
+        "",
+        "### Technology Stack",
+        "",
+    ]
+
+    if frontend:
+        lines.append(f"- **Front-End:** {', '.join(frontend)}")
+    if backend:
+        lines.append(f"- **Back-End:** {', '.join(backend)}")
+    if database:
+        lines.append(f"- **Database:** {', '.join(database)}")
+
+    if not (frontend or backend or database):
+        lines.append(
+            "> **Info:** Technology stack details are inferred from file extensions "
+            "and dependency files present in the repository."
+        )
+
+    return "\n".join(lines)
 
 
 # ── Main report builder ───────────────────────────────────────────────────────
@@ -559,14 +797,15 @@ def generate_comprehensive_report(
     files_ctx = summarize_files(files, limit=80)
     readme_ctx = "\n".join(readme.splitlines()[:300]) if readme else "No README found."
     deps_ctx = build_deps_context(repo_path, package_json, requirements, pom_xml)
-    folder_tree = load_folder_tree(repo_path, max_lines=150)
+    folder_tree = load_folder_tree(repo_path, max_lines=100)
     repo_name = repo_path.name
 
     general_system = (
         "Return well-formatted Markdown only. No introductory chatter. "
         "Ground output in repository evidence. When information is missing, "
         "state reasonable assumptions and label them as [Assumption]. "
-        "Never invent dependencies not present in the context."
+        "CRITICAL: Every item in a list or bullet point MUST start on a completely new line. "
+        "Do NOT cluster multiple points into a single paragraph."
     )
 
     # ── Agent 1: PM ───────────────────────────────────────────────────────────
@@ -584,9 +823,12 @@ def generate_comprehensive_report(
         "## 4. Non-Functional Requirements\n"
         "Bullet points for: Performance, Security, Usability, Maintainability, Scalability.\n\n"
         "## 7. Features\n"
-        "Grouped bullet points.\n\n"
+        "Bullet points. Ensure each feature starts on a new line.\n\n"
         "## 8. User Guide\n"
-        "Step-by-step numbered list.\n\n"
+        "Step-by-step numbered list. Ensure each step starts on a new line.\n"
+        "Keep this section concise (no more than ~20 numbered steps).\n"
+        "Do NOT paste full README templates or very long multi-page code blocks.\n"
+        "If you include code, limit it to at most one short bash snippet (<= 10 lines).\n\n"
         f"--- CONTEXT ---\n"
         f"README:\n{readme_ctx}\n\n"
         f"STATS:\n{repo_stats_ctx}\n\n"
@@ -601,51 +843,92 @@ def generate_comprehensive_report(
         max_tokens,
     )
 
-    # ── Agent 2: Architect ────────────────────────────────────────────────────
-    _notify("Agent 2/3: System Architect — Architecture, Design, Folder Structure…", 73)
+    # ── Agent 2: Architect (split into Architecture and System Design passes) ─
+    arch_system = "You are a senior System Architect. " + general_system
 
-    arch_prompt = (
+    _notify(
+        "Agent 2a: System Architect — System Architecture & Folder Structure…", 73
+    )
+
+    arch_prompt_a = (
         "You are an expert System Architect.\n"
-        "Write ONLY these sections (no others):\n\n"
+        "Write ONLY these two sections:\n\n"
         "## 2. System Architecture\n"
-        "Include:\n"
         "### High-Level Architecture\n"
-        "(describe the layers)\n"
+        "Describe the overall structure (layers, modules, services) in 2–4 short paragraphs.\n"
+        "Focus on what runs in the browser/client, what runs on the server, and what persists data.\n"
+        "Do NOT include any Mermaid, diagrams, or code blocks here — only prose and bullet lists.\n"
         "### Components\n"
-        "(list each component)\n"
-        "### Use Case Diagram\n"
-        "(Insert a Mermaid flowchart LR here — IMPORTANT: no parentheses in node labels, use only square brackets)\n"
-        "### Use Case Explanations\n"
-        "(4-6 bullet points explaining use cases in plain language)\n"
+        "List and describe the main technical components as bullet points.\n"
         "### Technology Stack\n"
-        "| Layer | Technology |\n"
-        "|-------|------------|\n"
-        "Use ONLY technologies actually present in the codebase. Do not guess.\n\n"
-        "## 5. System Design\n"
-        "Provide a technical design overview including:\n"
-        "### Database Design\n"
-        "(describe tables, fields, and schema relationships based on context)\n"
-        "### API Design\n"
-        "| Endpoint | Method | Description |\n"
-        "|---------|--------|-------------|\n"
-        "If no specific API is found, describe the internal module communication interfaces.\n\n"
+        "List languages, frameworks, and libraries used. Use ONLY what is actually present in the\n"
+        "dependencies and file extensions below. Group them under Front-End, Back-End, Database, and Tooling.\n"
+        "Again, do NOT use Mermaid or code blocks — just bullets or simple lists.\n\n"
         "## 6. Folder Structure\n"
-        "Use EXACTLY the folder tree below — do not modify, summarize, or truncate it:\n"
+        "Use EXACTLY the folder tree below — copy it verbatim, do not modify:\n"
         f"```\n{folder_tree}\n```\n\n"
         f"--- CONTEXT ---\n"
-        f"FILES SUMMARY:\n{files_ctx}\n\n"
-        f"DEPENDENCIES:\n{deps_ctx}\n\n"
-        f"STATS:\n{repo_stats_ctx}\n\n"
-        f"README (for technology inference):\n{readme_ctx[:1500]}"
+        f"FILES: {files_ctx}\n\n"
+        f"DEPS: {deps_ctx}\n\n"
+        f"README: {readme_ctx[:1500]}\n"
     )
-    part_arch = _chat_completion(
+    part_arch_a = _chat_completion(
         client,
         model,
-        "You are a senior System Architect. " + general_system,
-        arch_prompt,
+        arch_system,
+        arch_prompt_a,
         temperature,
         max_tokens,
     )
+
+    _notify("Agent 2b: System Architect — System Design…", 77)
+
+    arch_prompt_b = (
+        "You are an expert System Architect writing a technical design document.\n"
+        "Write ONLY the section below. Be specific — use actual class names, package names, and\n"
+        "file names from the context.\n\n"
+        "## 5. System Design\n\n"
+        "### Database Design\n"
+        "Describe the database tables and key fields. Infer from entity classes, DAO classes, and SQL files.\n"
+        "Include a simple table like:\n"
+        "| Table | Key Fields | Description |\n"
+        "|-------|-----------|-------------|\n"
+        "If you cannot confirm exact schema, describe it conceptually and add [Assumption].\n\n"
+        "### Application Layers & Request Flow\n"
+        "Explain how a typical request flows through the system. Use actual class names.\n"
+        "Example format:\n"
+        "1. Request hits a servlet/controller (e.g., Login servlet)\n"
+        "2. Servlet calls a DAO or repository\n"
+        "3. DAO queries database via a connection helper (e.g., DBContext)\n"
+        "4. Result mapped to an entity and returned\n\n"
+        "### Endpoints / Entry Points\n"
+        "| Action | Class / File | HTTP Method | Description |\n"
+        "|--------|-------------|-------------|-------------|\n"
+        "List the main servlet actions or API endpoints found in the codebase. If no HTTP API exists,\n"
+        "list the main controller/servlet classes and what they handle.\n\n"
+        "--- CONTEXT ---\n"
+        "FILES SUMMARY (contains class names, methods, packages):\n"
+        f"{files_ctx}\n\n"
+        "FOLDER STRUCTURE (excerpt):\n"
+        f"{folder_tree[:2000]}\n\n"
+        "DEPENDENCIES:\n"
+        f"{deps_ctx}\n\n"
+        "README:\n"
+        f"{readme_ctx[:1000]}\n\n"
+        "IMPORTANT: You MUST write a non-empty '## 5. System Design' section with at least the\n"
+        "Database Design and Application Layers subsections. Base everything on the actual files and\n"
+        "classes listed above.\n"
+    )
+    part_arch_b = _chat_completion(
+        client,
+        model,
+        arch_system,
+        arch_prompt_b,
+        temperature,
+        max_tokens,
+    )
+
+    part_arch = part_arch_a + "\n\n" + part_arch_b
 
     # ── Gemini diagrams (optional upgrade to §2) ──────────────────────────────
     diagram_md = ""
@@ -671,17 +954,20 @@ def generate_comprehensive_report(
         "### Testing Types\n"
         "- Unit Testing\n- Integration Testing\n- System Testing\n\n"
         "### Test Cases\n"
-        "Provide EXACTLY 5 high-level test cases (not file-level):\n"
-        "| Test Case ID | Test Scenario | Expected Result | Actual Result | Pass/Fail |\n"
-        "|--------------|---------------|-----------------|---------------|-----------|\n\n"
+        "Provide EXACTLY 5 high-level test cases (not file-level). Do NOT assume execution results:\n"
+        "| Test Case ID | Test Scenario | Expected Result |\n"
+        "|--------------|---------------|-----------------|\n\n"
         "## 10. Deployment\n"
-        "Describe architecture and tools (Docker, Cloud, CI/CD).\n\n"
+        "Describe how this project is or could realistically be deployed based on the actual repository evidence.\n"
+        "- First, state what you can see directly in the repo (e.g., app server type, build tooling, any Docker / CI / cloud configs).\n"
+        "- ONLY mention specific tools such as Docker, Kubernetes, Jenkins, GitHub Actions, or cloud providers if they appear in dependencies, filenames, or README.\n"
+        "- If no deployment artefacts are present, propose a simple recommended deployment approach and clearly prefix it with [Assumption].\n\n"
         "## 11. Security Considerations\n"
-        "Cover: Authentication, SQL injection prevention, XSS, session management, data protection.\n\n"
+        "Cover: Authentication, SQL injection prevention, XSS, session management, data protection.\n"
+        "- Clearly separate what the codebase appears to implement from best-practice recommendations.\n"
+        "- When you cannot confirm a practice from the code (e.g., HTTPS, password hashing, secure cookies), describe it as a recommendation and label with [Assumption].\n\n"
         "## 12. Future Improvements\n"
         "5-8 bullet points.\n\n"
-        "## 13. References\n"
-        "List libraries, tools, and external resources actually used.\n\n"
         f"--- CONTEXT ---\n"
         f"FILES SUMMARY:\n{files_ctx}\n\n"
         f"DEPENDENCIES:\n{deps_ctx}\n\n"
@@ -708,20 +994,70 @@ def generate_comprehensive_report(
         if body:
             sections[num] = body
 
-    # ── Post-process Section 2: embed diagrams ────────────────────────────────
-    if diagram_md:
-        sec2 = sections.get(2, "")
-        # If the LLM already wrote a use case diagram block, replace it; else append
-        if "```mermaid" in sec2:
-            # Replace the existing mermaid block(s) with Gemini's version
-            sec2 = re.sub(r"```mermaid.*?```", "", sec2, flags=re.DOTALL).strip()
-        # Inject diagrams after the "Use Case Diagram" heading if present, else append
-        uc_heading = re.search(r"###\s+Use Case Diagram", sec2, re.IGNORECASE)
-        if uc_heading:
-            insert_pos = uc_heading.end()
-            sec2 = sec2[:insert_pos] + "\n\n" + diagram_md + "\n\n" + sec2[insert_pos:]
-        else:
-            sec2 = sec2 + "\n\n### Use Case Diagram\n\n" + diagram_md
+    # ── Light cleanup & de-duplication across sections ─────────────────────────
+    def _clean_section_text(num: int, text: str) -> str:
+        if not text:
+            return text
+        cleaned = text.strip()
+        # Drop standalone "Conclusion" headings that sometimes leak into sections
+        if num not in (1, 8):
+            cleaned = re.sub(
+                r"^#+\s*Conclusion\s*\n+", "", cleaned, flags=re.IGNORECASE | re.MULTILINE
+            )
+        return cleaned.strip()
+
+    # Compute a simple architecture signature from section 2 to help remove
+    # obvious duplicates that sometimes show up in later sections.
+    arch_sig = ""
+    if 2 in sections:
+        arch_body = sections[2]
+        m = re.search(
+            r"Front-?End:.*?\n.*?Back-?End:.*?\n.*?Database Management.*?\n?",
+            arch_body,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if m:
+            arch_sig = m.group(0).strip()
+
+    for num, txt in list(sections.items()):
+        txt = _clean_section_text(num, txt)
+        # Never aggressively de-duplicate System Design (§5); it legitimately
+        # echoes some architecture terminology.
+        if arch_sig and num not in (2, 5):
+            txt = txt.replace(arch_sig, "").strip()
+        sections[num] = txt
+
+    # ── Post-process Section 2: guarantee prose + embed diagrams ─────────────
+    #
+    # RULE: Section 2 MUST always have readable prose content BEFORE the first
+    # mermaid block.  Without this, the PDF shows a blank page between the
+    # '2. System Architecture' heading and the first diagram page because
+    # _render_mermaid() immediately calls add_page().
+    #
+    sec2 = sections.get(2, "")
+
+    # Step 1 — strip any mermaid blocks the LLM put inside sec2; we replace
+    # them with our structured, properly-labelled diagram_md below.
+    if "```mermaid" in sec2:
+        sec2 = re.sub(r"```mermaid.*?```", "", sec2, flags=re.DOTALL).strip()
+
+    # Step 2 — strip stray diagram headings that would conflict with our labels.
+    sec2 = re.sub(
+        r"###\s+(Use Case Diagram|Core.*?Flow|Architecture.*?|System Diagrams)\s*\n",
+        "",
+        sec2,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    # Step 3 — if sec2 is still empty after stripping, inject a meaningful
+    # prose fallback so the page is never blank.
+    if not sec2:
+        sec2 = _sec2_prose_fallback(files_ctx, deps_ctx, readme_ctx)
+
+    # Step 4 — append diagrams after the prose (if any were generated).
+    if diagram_md and diagram_md.strip():
+        sections[2] = sec2 + "\n\n" + diagram_md.strip()
+    else:
         sections[2] = sec2
 
     # ── Post-process Section 6: inject full folder tree if LLM truncated ─────
